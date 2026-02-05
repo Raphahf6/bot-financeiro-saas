@@ -16,61 +16,83 @@ REQUIRED_VARS.forEach(key => {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Usamos o Flash: Modelo mais rápido e barato (frequentemente gratuito no tier básico)
+
+// Usamos a versão 002 ou a mais recente estável
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-console.log('🧠 Bot Híbrido (Econômico) Iniciado...');
+console.log('🧠 Bot Híbrido (Correção JSON) Iniciado...');
 
 // --- FILTRO INTELIGENTE (ROTEADOR) ---
-// Define se resolvemos localmente (grátis) ou via IA (custo de token)
 async function rotearIntencao(texto) {
   const t = texto.toLowerCase();
 
-  // 1. Consultas de Saldo/Resumo (REGEX LOCAL)
+  // 1. Consultas de Saldo/Resumo
   if (t.match(/(saldo|resumo|quanto.*gastei|gastos.*mes|fatura|balan[çc]o)/)) {
     return { intent: 'CHECK_BALANCE' };
   }
 
-  // 2. Consultas de Contas/Vencimentos (REGEX LOCAL)
+  // 2. Consultas de Contas/Vencimentos
   if (t.match(/(conta|boleto|pagar|vencendo|vence|hoje|amanh[ãa])/)) {
     return { intent: 'CHECK_BILLS' };
   }
 
-  // 3. Saudações Simples (REGEX LOCAL)
+  // 3. Saudações Simples
   if (t.match(/^(oi|ol[áa]|bom dia|boa tarde|boa noite|eai|opa)$/)) {
     return { intent: 'CHAT_LOCAL', reply: "Olá! Sou seu assistente financeiro. Pode me contar seus gastos ou perguntar sobre seu saldo." };
   }
 
-  // 4. Ajuda (REGEX LOCAL)
+  // 4. Ajuda
   if (t.match(/^(ajuda|help|comandos|o que.*fazer)/)) {
     return { intent: 'CHAT_LOCAL', reply: "Tente dizer:\n\n• 'Gastei 50 no Uber'\n• 'Recebi 1000'\n• 'Qual meu saldo?'\n• 'Contas de hoje'" };
   }
 
-  // 5. Se não bateu com nada acima, PROVAVELMENTE é um lançamento complexo.
-  // Ex: "Comprei 2x burguer king 40 reais" -> Manda para a IA entender.
   return { intent: 'USE_AI' };
 }
 
-// --- FUNÇÃO CÉREBRO (IA - Só chamada quando necessário) ---
+// --- FUNÇÃO CÉREBRO (IA) ---
 async function processarComIA(mensagemTexto) {
   const dataHoje = new Date().toLocaleDateString('pt-BR');
   
-  // Prompt OTIMIZADO (Curto para economizar tokens de entrada)
+  // PROMPT CORRIGIDO: Estrutura JSON Rígida
   const prompt = `
-    Hoje: ${dataHoje}. Analise: "${mensagemTexto}".
-    Retorne JSON puro.
-    Intents: ADD_TRANSACTION, CHAT.
-    Se ADD_TRANSACTION: type (expense/income), amount (number), description, category_guess.
-    Se CHAT: reply_text.
+    Hoje: ${dataHoje}.
+    Analise a mensagem: "${mensagemTexto}".
+    
+    Se for sobre gastar ou receber dinheiro, extraia os dados.
+    Se for conversa fiada, responda.
+
+    Responda ESTRITAMENTE com este formato JSON (sem markdown):
+    {
+      "intent": "ADD_TRANSACTION" ou "CHAT",
+      "data": {
+        "type": "expense" (gasto) ou "income" (ganho),
+        "amount": 0.00,
+        "description": "string",
+        "category_guess": "string (ex: Alimentação, Transporte, Lazer, Moradia, Outros)"
+      },
+      "reply_text": "string (apenas se for CHAT)"
+    }
   `;
 
   try {
     const result = await model.generateContent(prompt);
-    const text = result.response.text().replace(/```json|```/g, '').trim();
-    return JSON.parse(text);
+    let text = result.response.text();
+    // Limpeza agressiva para garantir JSON puro
+    text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    const json = JSON.parse(text);
+    
+    // Tratamento de segurança: Se a IA devolver o valor como string "15,50", converte para numero
+    if (json.data && json.data.amount) {
+        if (typeof json.data.amount === 'string') {
+            json.data.amount = parseFloat(json.data.amount.replace('R$', '').replace(',', '.').trim());
+        }
+    }
+    
+    return json;
   } catch (error) {
     console.error("Erro IA:", error);
-    return { intent: "CHAT", reply_text: "Não entendi. Tente 'Gastei X em Y'." };
+    return { intent: "CHAT", reply_text: "Não consegui entender os valores. Tente simplificar, ex: 'Gastei 15'." };
   }
 }
 
@@ -100,7 +122,7 @@ bot.start(async (ctx) => {
   ctx.reply(`✅ Conectado! Pode falar naturalmente.`);
 });
 
-// --- PROCESSADOR DE MENSAGENS ---
+// --- PROCESSADOR ---
 bot.on('text', async (ctx) => {
   if (ctx.message.text.startsWith('/')) return;
   
@@ -109,21 +131,23 @@ bot.on('text', async (ctx) => {
 
   await ctx.sendChatAction('typing');
 
-  // 1. PASSO ECONÔMICO: Tenta resolver localmente primeiro
   let decisao = await rotearIntencao(ctx.message.text);
 
-  // 2. Se o roteador local decidiu que precisa de IA, aí sim chamamos
   if (decisao.intent === 'USE_AI') {
-    // console.log("💸 Usando crédito de IA para entender:", ctx.message.text);
     decisao = await processarComIA(ctx.message.text);
-  } else {
-    // console.log("⚡ Resolvido localmente (Custo Zero):", decisao.intent);
   }
 
-  // 3. Execução
+  // Debug no console para você ver o que está chegando
+  console.log("Decisão Final:", JSON.stringify(decisao, null, 2));
+
   switch (decisao.intent) {
     case 'ADD_TRANSACTION':
-      await handleAddTransaction(ctx, userId, decisao.data);
+      // Verificação extra: data existe?
+      if (!decisao.data) {
+          ctx.reply("Entendi que é uma transação, mas faltou dados. Tente 'Gastei 50 em X'.");
+      } else {
+          await handleAddTransaction(ctx, userId, decisao.data);
+      }
       break;
     case 'CHECK_BALANCE':
       await handleCheckBalance(ctx, userId);
@@ -141,45 +165,47 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// --- HANDLERS (Lógica de Banco de Dados) ---
-
-// 1. Adicionar Transação (Vem da IA)
+// --- HANDLERS ---
 async function handleAddTransaction(ctx, userId, data) {
-  if (!data || !data.amount) return ctx.reply("Não entendi o valor. Tente 'Gastei 50'.");
+  // Sanitização final do valor (Blindagem)
+  let finalAmount = data.amount;
+  if (!finalAmount) {
+      return ctx.reply("Não entendi o valor. Tente 'Gastei 50'.");
+  }
 
-  // Tenta achar categoria
+  // Busca Categoria
   let categoryId = null;
   const { data: cat } = await supabase.from('categories').select('id').ilike('name', `%${data.category_guess}%`).limit(1).maybeSingle();
   
   if (cat) {
     categoryId = cat.id;
   } else {
-    // Fallback: Pega a categoria 'Outros' ou a primeira que achar
     const { data: anyCat } = await supabase.from('categories').select('id').limit(1).single();
     categoryId = anyCat?.id;
   }
 
   const { error } = await supabase.from('transactions').insert({
     user_id: userId,
-    description: data.description,
-    amount: data.amount,
+    description: data.description || "Gasto via Telegram",
+    amount: finalAmount,
     type: data.type,
     category_id: categoryId,
     date: new Date().toISOString()
   });
 
-  if (error) return ctx.reply("Erro ao salvar.");
+  if (error) {
+      console.error(error);
+      return ctx.reply("Erro ao salvar no banco de dados.");
+  }
   
   const emoji = data.type === 'expense' ? '💸' : '💰';
-  ctx.reply(`${emoji} Salvo: ${data.description} (R$ ${data.amount})`);
+  ctx.reply(`${emoji} **Salvo!**\n📝 ${data.description}\n💲 R$ ${finalAmount}\n📂 ${data.category_guess || 'Geral'}`);
 }
 
-// 2. Consultar Saldo/Resumo (Local - Custo Zero)
 async function handleCheckBalance(ctx, userId) {
   const hoje = new Date();
   const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString();
 
-  // Busca transações do mês
   const { data: transactions } = await supabase
     .from('transactions')
     .select('amount, type')
@@ -196,7 +222,6 @@ async function handleCheckBalance(ctx, userId) {
 
   const saldo = receitas - despesas;
   
-  // Busca a Renda Planejada (para comparar)
   const { data: profile } = await supabase.from('profiles').select('monthly_income').eq('id', userId).single();
   const renda = profile?.monthly_income || 0;
 
@@ -206,16 +231,12 @@ async function handleCheckBalance(ctx, userId) {
     `🟢 Entradas Reais: R$ ${receitas.toFixed(2)}\n` +
     `🔴 Gastos Reais: R$ ${despesas.toFixed(2)}\n` +
     `────────────────\n` +
-    `💵 **Saldo (Entradas - Saídas): R$ ${saldo.toFixed(2)}**`
+    `💵 **Saldo: R$ ${saldo.toFixed(2)}**`
   );
 }
 
-// 3. Consultar Contas (Local - Custo Zero)
 async function handleCheckBills(ctx, userId) {
   const diaHoje = new Date().getDate();
-  
-  // Busca contas onde o dia de vencimento é HOJE ou MAIOR (próximas contas)
-  // Limitamos a 5 para não poluir o chat
   const { data: bills } = await supabase
     .from('recurring_bills')
     .select('*')
@@ -225,7 +246,7 @@ async function handleCheckBills(ctx, userId) {
     .limit(5);
 
   if (!bills || bills.length === 0) {
-    return ctx.reply("✅ Nenhuma conta pendente para os próximos dias deste mês.");
+    return ctx.reply("✅ Nenhuma conta pendente.");
   }
 
   let msg = `📅 **Próximas Contas:**\n\n`;
@@ -237,7 +258,7 @@ async function handleCheckBills(ctx, userId) {
   ctx.reply(msg);
 }
 
-// --- CRON (Diário) ---
+// CRON JOB
 cron.schedule('0 9 * * *', async () => {
   const { data: integrations } = await supabase.from('user_integrations').select('*').not('telegram_chat_id', 'is', null);
   if (!integrations) return;
@@ -254,3 +275,5 @@ cron.schedule('0 9 * * *', async () => {
 }, { timezone: "America/Sao_Paulo" });
 
 bot.launch();
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
