@@ -2,7 +2,6 @@ const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/helpers');
 const { DashboardMenu, DASHBOARD_URL } = require('../utils/keyboards');
 
-// Função visual: Barra de Progresso
 const drawBudgetBar = (spent, limit) => {
     const spentPos = Math.abs(spent);
     const limitPos = Math.abs(limit);
@@ -20,7 +19,6 @@ const drawBudgetBar = (spent, limit) => {
     return `\n${icon} [${'█'.repeat(filled)}${'░'.repeat(empty)}] ${percentage.toFixed(0)}%`;
 };
 
-// 1. DASHBOARD COMPLETO
 const getDashboard = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
@@ -33,7 +31,7 @@ const getDashboard = async (ctx) => {
     try {
         // --- 1. BUSCAR DADOS ---
 
-        // A. Perfil (Salário Base)
+        // A. Perfil
         const { data: profile } = await supabase
             .from('profiles')
             .select('monthly_income')
@@ -41,46 +39,47 @@ const getDashboard = async (ctx) => {
             .single();
         const salarioBase = parseFloat(profile?.monthly_income || 0);
 
-        // B. Fixas (Recorrentes)
+        // B. Contas Mensais (Recorrentes) - AGORA PEGAMOS A CATEGORIA TAMBÉM
         const { data: recurring } = await supabase
             .from('recurring_bills')
-            .select('amount')
+            .select('amount, category_id') // <--- Importante: trazer category_id
             .eq('user_id', userId)
             .eq('type', 'expense');
+        
+        // Soma total das fixas para o resumo geral
         const totalFixas = recurring?.reduce((acc, curr) => acc + Math.abs(parseFloat(curr.amount)), 0) || 0;
 
-        // C. Transações do Mês
+        // C. Transações Variáveis do Mês
         const { data: transactions } = await supabase
             .from('transactions')
             .select('amount, type, category_id')
             .eq('user_id', userId)
             .gte('created_at', dataInicioIso);
 
-        // D. Categorias (Nomes)
+        // D. Categorias
         const { data: categories } = await supabase
             .from('categories')
             .select('id, name')
             .or(`user_id.eq.${userId},user_id.is.null`);
 
-        // E. ORÇAMENTOS (Tabela budgets)
+        // E. Orçamentos
         const { data: budgetsData } = await supabase
             .from('budgets')
             .select('category_id, limit_amount')
             .eq('user_id', userId);
 
-        // --- 2. PROCESSAMENTO ---
+        // --- 2. PROCESSAMENTO E SOMAS ---
 
-        // Mapa de Orçamentos
         const budgetMap = {};
         if (budgetsData) {
             budgetsData.forEach(b => budgetMap[b.category_id] = parseFloat(b.limit_amount));
         }
 
         let ganhosExtras = 0;
-        let gastosVariaveis = 0;
-        const gastosPorCategoria = {};
+        let gastosVariaveisTotal = 0;
+        const gastosPorCategoria = {}; // Acumula Fixas + Variáveis
         
-        // Inicializa contadores
+        // Mapeamento de nomes de categorias
         const catNames = {};
         categories?.forEach(c => {
             catNames[c.id] = c.name;
@@ -89,69 +88,83 @@ const getDashboard = async (ctx) => {
         gastosPorCategoria['sem_categoria'] = 0;
         gastosPorCategoria['outra'] = 0;
 
-        // Soma Transações
+        // 2.1. SOMAR TRANSAÇÕES (Gastos Variáveis)
         transactions?.forEach(t => {
             const valAbsoluto = Math.abs(parseFloat(t.amount));
 
             if (t.type === 'income') {
                 ganhosExtras += valAbsoluto;
             } else {
-                gastosVariaveis += valAbsoluto;
+                gastosVariaveisTotal += valAbsoluto;
                 
                 const catId = t.category_id;
-                if (!catId) {
-                    gastosPorCategoria['sem_categoria'] += valAbsoluto;
-                } else if (catNames[catId]) {
-                    gastosPorCategoria[catId] += valAbsoluto;
-                } else {
-                    gastosPorCategoria['outra'] += valAbsoluto;
-                }
+                if (!catId) gastosPorCategoria['sem_categoria'] += valAbsoluto;
+                else if (catNames[catId]) gastosPorCategoria[catId] += valAbsoluto;
+                else gastosPorCategoria['outra'] += valAbsoluto;
             }
         });
 
-        // Totais
+        // 2.2. SOMAR CONTAS MENSAIS (Gastos Fixos) NA CATEGORIA
+        // Aqui está a correção: A conta fixa consome o orçamento da categoria!
+        recurring?.forEach(bill => {
+            const valAbsoluto = Math.abs(parseFloat(bill.amount));
+            const catId = bill.category_id;
+
+            if (catId) {
+                if (catNames[catId]) {
+                    gastosPorCategoria[catId] += valAbsoluto;
+                } else {
+                    // Se tem ID mas não achou o nome (categoria oculta/deletada), soma em 'outra'
+                    // Ou podemos optar por não somar na categoria se preferir, mas somar é mais seguro
+                     gastosPorCategoria['outra'] += valAbsoluto;
+                }
+            } else {
+                gastosPorCategoria['sem_categoria'] += valAbsoluto;
+            }
+        });
+
+        // Totais Gerais
         const receitaTotal = salarioBase + ganhosExtras;
-        const despesaTotal = totalFixas + gastosVariaveis; 
+        const despesaTotal = totalFixas + gastosVariaveisTotal; 
         const saldoPrevisto = receitaTotal - despesaTotal;
         const status = saldoPrevisto >= 0 ? '🔵 Azul' : '🔴 Vermelho';
 
-        // --- 3. MONTAR VISUALIZAÇÃO ---
+        // --- 3. VISUALIZAÇÃO ---
 
-        let msg = `📊 *[Resumo Financeiro Mensal](${DASHBOARD_URL})*\n\n`; // Link no título
+        let msg = `📊 *[Resumo Financeiro Mensal](${DASHBOARD_URL})*\n\n`;
         
         msg += `💵 *Receitas:* ${formatCurrency(receitaTotal)}\n`;
         msg += `   ├ Base: ${formatCurrency(salarioBase)}\n`;
         msg += `   └ Extras: ${formatCurrency(ganhosExtras)}\n`;
         
         msg += `\n📉 *Despesas:* ${formatCurrency(despesaTotal)}\n`;
-        msg += `   ├ Fixas: ${formatCurrency(totalFixas)}\n`;
-        msg += `   └ Variáveis: ${formatCurrency(gastosVariaveis)}\n`;
+        msg += `   ├ Fixas (Mensais): ${formatCurrency(totalFixas)}\n`;
+        msg += `   └ Variáveis (Extras): ${formatCurrency(gastosVariaveisTotal)}\n`;
         
         msg += `───────────────────\n`;
-        msg += `⚖️ *Saldo Disp: ${formatCurrency(saldoPrevisto)}*\n`;
+        msg += `⚖️ *Saldo Previsto: ${formatCurrency(saldoPrevisto)}*\n`;
         msg += `Status: ${status}\n\n`;
 
-        msg += `📂 *Controle de Orçamentos*\n`;
+        msg += `📂 *Controle de Orçamentos*\n_Inclui gastos variáveis + contas mensais_\n`;
 
         let algumItem = false;
 
-        // Categorias com Orçamento ou Gasto
         categories?.forEach(cat => {
-            const gasto = gastosPorCategoria[cat.id] || 0;
+            const gastoTotal = gastosPorCategoria[cat.id] || 0; // Soma (Fixa + Variável)
             const limite = budgetMap[cat.id] || 0; 
 
-            if (limite > 0 || gasto > 0) {
+            if (limite > 0 || gastoTotal > 0) {
                 algumItem = true;
                 msg += `\n🏷️ *${cat.name}*`;
                 
                 if (limite > 0) {
-                    const restante = limite - gasto;
-                    msg += drawBudgetBar(gasto, limite);
-                    msg += `\n   ${formatCurrency(gasto)} / ${formatCurrency(limite)}`;
+                    const restante = limite - gastoTotal;
+                    msg += drawBudgetBar(gastoTotal, limite);
+                    msg += `\n   ${formatCurrency(gastoTotal)} / ${formatCurrency(limite)}`;
                     if (restante < 0) msg += ` (🚨 ${formatCurrency(restante)})`;
                     else msg += ` (✅ Restam ${formatCurrency(restante)})`;
                 } else {
-                    msg += `\n   ${formatCurrency(gasto)} (Sem limite)`;
+                    msg += `\n   ${formatCurrency(gastoTotal)} (Sem limite)`;
                 }
             }
         });
@@ -165,13 +178,9 @@ const getDashboard = async (ctx) => {
             msg += `\n\n❓ *Outras:* ${formatCurrency(gastosPorCategoria['outra'])}`;
         }
 
-        if (!algumItem) msg += `_Sem movimentações este mês._\n`;
+        if (!algumItem) msg += `_Sem dados para este mês._\n`;
 
-        // Envia com o MENU DE CONTEXTO (DashboardMenu)
-        ctx.reply(msg, { 
-            parse_mode: 'Markdown', 
-            ...DashboardMenu 
-        });
+        ctx.reply(msg, { parse_mode: 'Markdown', ...DashboardMenu });
 
     } catch (err) {
         console.error('Erro Dashboard:', err);
@@ -179,7 +188,6 @@ const getDashboard = async (ctx) => {
     }
 };
 
-// 2. EXTRATO
 const getStatement = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     const { data } = await supabase.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(10);
@@ -192,7 +200,6 @@ const getStatement = async (ctx) => {
         const dataRef = t.date || t.created_at; 
         msg += `${icon} *${t.description}* — ${formatCurrency(Math.abs(t.amount))}\n📅 ${formatDate(dataRef)}\n\n`;
     });
-    
     ctx.reply(msg, { parse_mode: 'Markdown', ...DashboardMenu });
 };
 

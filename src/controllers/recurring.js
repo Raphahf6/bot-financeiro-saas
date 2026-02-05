@@ -1,96 +1,131 @@
 const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency } = require('../utils/helpers');
-const { MainMenu } = require('../utils/keyboards');
-const { getCategoryByDescription } = require('../utils/categorizer');
-const { RecurringMenu } = require('../utils/keyboards'); // <--- MENU NOVO
+const { RecurringMenu, createRecurringCategoryButtons } = require('../utils/keyboards');
+const { getCategoryByDescription, getCategoryOptions } = require('../utils/categorizer');
 
+// 1. LISTAR
 const listRecurring = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
 
-    const { data: bills } = await supabase
+    // Busca categorias também para mostrar o nome
+    const { data: bills, error } = await supabase
         .from('recurring_bills')
-        .select('*')
+        .select(`
+            *,
+            categories (name)
+        `)
         .eq('user_id', userId)
         .eq('type', 'expense')
         .order('due_day', { ascending: true });
 
+    if (error) return ctx.reply('Erro ao buscar contas.');
+
     if (!bills || bills.length === 0) {
         return ctx.reply(
-            '📅 *Sem Contas Fixas*\nClique abaixo para adicionar:', 
+            '📅 *Sem Contas Mensais*\nCadastre seus gastos fixos para o bot prever seu saldo.', 
             { parse_mode: 'Markdown', ...RecurringMenu }
         );
     }
 
     let total = 0;
-    let msg = '📅 *Suas Contas Fixas:*\n\n';
+    let msg = '📅 *Suas Contas Mensais:*\n\n';
+    
     bills.forEach(b => {
         total += parseFloat(b.amount);
-        msg += `🗓️ Dia ${b.due_day}: *${b.description}* — ${formatCurrency(b.amount)}\n`;
+        const catName = b.categories?.name ? `(${b.categories.name})` : '⚠️ Sem Categoria';
+        msg += `🗓️ Dia ${b.due_day}: *${b.description}* ${catName}\n💰 ${formatCurrency(b.amount)}\n────────────────\n`;
     });
-    msg += `\n💰 *Total: ${formatCurrency(total)}*`;
+
+    msg += `\n💰 *Total Fixo: ${formatCurrency(total)}*`;
     
     ctx.reply(msg, { parse_mode: 'Markdown', ...RecurringMenu });
 };
 
-// 2. ADICIONAR CONTA FIXA
+// 2. ADICIONAR (Com verificação de categoria)
 const addRecurring = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
-    if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
+    if (!userId) return;
 
-    // Novo Formato Obrigatório: /fixa DIA VALOR DESCRIÇÃO
-    // Ex: /fixa 05 150.90 Internet Fibra
+    // /fixa DIA VALOR NOME
     const parts = ctx.message.text.replace(/\s+/g, ' ').split(' ');
-    
     const dayRaw = parts[1];
     const amountRaw = parts[2];
     const description = parts.slice(3).join(' ');
 
     if (!dayRaw || !amountRaw || !description) {
-        return ctx.reply(
-            '❌ Formato incorreto.\n' +
-            'Como o dia de vencimento é obrigatório, use:\n\n' +
-            '`/fixa DIA VALOR NOME`\n' +
-            'Exemplo: `/fixa 10 150.00 Internet`', 
-            { parse_mode: 'Markdown' }
-        );
+        return ctx.reply('❌ Use: `/fixa DIA VALOR NOME`\nEx: `/fixa 05 150 Internet`', { parse_mode: 'Markdown' });
     }
 
     const dueDay = parseInt(dayRaw);
     const amount = parseFloat(amountRaw.replace(',', '.'));
-
-    // Validações básicas
-    if (isNaN(dueDay) || dueDay < 1 || dueDay > 31) {
-        return ctx.reply('❌ Dia inválido (Use entre 1 e 31).');
-    }
-    if (isNaN(amount)) {
-        return ctx.reply('❌ Valor inválido.');
-    }
-
-    // Tenta categorizar automaticamente
+    
+    // 1. Tenta identificar categoria
     const categoryId = await getCategoryByDescription(description, userId);
 
-    const { error } = await supabase.from('recurring_bills').insert({
-        user_id: userId,
-        amount: amount,
-        description: description,
-        due_day: dueDay,       // Campo obrigatório da sua tabela
-        category_id: categoryId,
-        type: 'expense'        // Padrão 'expense'
-    });
+    // 2. Salva (Mesmo se for null)
+    const { data: savedBill, error } = await supabase
+        .from('recurring_bills')
+        .insert({
+            user_id: userId,
+            amount: amount,
+            description: description,
+            due_day: dueDay,
+            category_id: categoryId,
+            type: 'expense'
+        })
+        .select()
+        .single();
 
-    if (error) {
-        console.error(error);
-        return ctx.reply('Erro ao salvar conta fixa. Verifique se o dia está correto.');
+    if (error) return ctx.reply('Erro ao salvar.');
+
+    // 3. Verifica se precisa pedir categoria manual
+    if (categoryId) {
+        // Sucesso total
+        ctx.reply(
+            `✅ *Conta Mensal Adicionada!*\n\n📝 ${description}\n📂 Categoria: Detectada\n💰 ${formatCurrency(amount)}\n🗓️ Todo dia ${dueDay}`, 
+            { parse_mode: 'Markdown', ...RecurringMenu }
+        );
+    } else {
+        // Falha na detecção: Pede ajuda ao usuário
+        const categories = await getCategoryOptions(userId);
+        const keyboard = createRecurringCategoryButtons(savedBill.id, categories);
+
+        ctx.reply(
+            `💾 *Conta Salva!* Mas não identifiquei a categoria.\nIsso é importante para seu orçamento.\n\n👇 *Selecione a categoria de ${description}:*`, 
+            { parse_mode: 'Markdown', ...keyboard }
+        );
     }
-
-    ctx.reply(
-        `✅ Conta Fixa Adicionada!\n\n` +
-        `📝 *${description}*\n` +
-        `💰 ${formatCurrency(amount)}\n` +
-        `🗓️ Vence todo dia ${dueDay}`, 
-        { parse_mode: 'Markdown' }
-    );
 };
 
-module.exports = { listRecurring, addRecurring };
+// 3. CALLBACK DE CATEGORIA (Quando clica no botão)
+const handleRecurringCategoryCallback = async (ctx) => {
+    // "set_rec_cat:BILL_ID:CAT_ID"
+    const parts = ctx.match[0].split(':');
+    const billId = parts[1];
+    const catId = parts[2];
+
+    try {
+        // Atualiza no banco
+        const { error } = await supabase
+            .from('recurring_bills')
+            .update({ category_id: catId })
+            .eq('id', billId);
+
+        if (error) throw error;
+
+        // Pega nome da categoria para confirmar
+        const { data: cat } = await supabase.from('categories').select('name').eq('id', catId).single();
+        
+        await ctx.editMessageText(
+            `✅ Categoria definida como: *${cat.name}*\nAgora seu orçamento está ajustado!`, 
+            { parse_mode: 'Markdown' }
+        );
+        
+    } catch (err) {
+        console.error('Erro callback recurring:', err);
+        ctx.answerCbQuery('Erro ao atualizar.');
+    }
+};
+
+module.exports = { listRecurring, addRecurring, handleRecurringCategoryCallback };
