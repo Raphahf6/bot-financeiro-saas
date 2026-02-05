@@ -74,3 +74,19 @@ bot.launch({ dropPendingUpdates: true })
 // Graceful Stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+const http = require('http'); // Importa o módulo http nativo
+
+// Cria um servidor simples que retorna 200 OK
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot está online e ativo no Render!');
+});
+
+// O Render define a porta automaticamente na variável de ambiente PORT
+// Se não houver PORT definida (rodando localmente), usa a 3000
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, () => {
+    console.log(`✅ Servidor HTTP de verificação rodando na porta ${PORT}`);
+});
