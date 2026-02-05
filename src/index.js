@@ -1,15 +1,15 @@
-require('dotenv').config(); // Carrega variáveis de ambiente
+require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const express = require('express');
-const http = require('http'); // Módulo nativo para melhor compatibilidade com Render
+const http = require('http');
 
-// --- IMPORTS DOS MÓDULOS (Controllers e Serviços) ---
+// --- IMPORTS DOS MÓDULOS ---
 const authController = require('./controllers/auth');
 const transactionController = require('./controllers/transaction');
 const reportController = require('./controllers/report');
-const goalController = require('./controllers/goals');      // Módulo de Metas
-const recurringController = require('./controllers/recurring'); // Módulo de Contas Fixas
-const scheduler = require('./services/scheduler');          // Agendador (Cron Job)
+const goalController = require('./controllers/goals');
+const recurringController = require('./controllers/recurring');
+const scheduler = require('./services/scheduler');
 const { MainMenu } = require('./utils/keyboards');
 
 // ----------------------------------------------------------------------
@@ -18,20 +18,16 @@ const { MainMenu } = require('./utils/keyboards');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Rota Raiz: O Render acessa isso a cada poucos segundos para manter "Live"
 app.get('/', (req, res) => {
     res.status(200).send('Bot Finan.AI (Consultor 3.0) está Online! 🚀');
 });
 
-// Rota Health Check (Padrão de infraestrutura)
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', service: 'bot-financeiro' });
 });
 
-// Criação explícita do servidor HTTP
 const server = http.createServer(app);
 
-// OUVINDO NA PORTA: O '0.0.0.0' é OBRIGATÓRIO para o Render funcionar
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor HTTP rodando na porta ${PORT}`);
 });
@@ -46,7 +42,7 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Atualiza o Menu Azul (Lista de Comandos Visíveis)
+// Atualiza o Menu
 bot.telegram.setMyCommands([
     { command: 'menu', description: 'Painel Principal' },
     { command: 'resumo', description: 'Dashboard do Mês (Saldo)' },
@@ -55,76 +51,91 @@ bot.telegram.setMyCommands([
     { command: 'fixas', description: 'Minhas Contas Fixas' },
     { command: 'metas', description: 'Meus Objetivos' },
     { command: 'extrato', description: 'Histórico Recente' }
-]).then(() => console.log('✅ Menu nativo do Telegram atualizado.'));
+]).then(() => console.log('✅ Menu nativo do Telegram atualizado.')).catch(e => console.error('Erro menu:', e));
 
 // ----------------------------------------------------------------------
-// 3. ROTAS E LÓGICA DO BOT
+// 3. ROTAS E LÓGICA
 // ----------------------------------------------------------------------
 
-// --- Autenticação e Navegação ---
+// Auth
 bot.start(authController.handleStart);
 bot.hears(['Menu', '/menu'], (ctx) => ctx.reply('Painel Consultor:', MainMenu));
 bot.hears(['❓ Ajuda'], (ctx) => ctx.reply(
     '💡 *Comandos Rápidos:*\n\n' +
-    '• `/gasto 50 Pizza` (Lançar despesa)\n' +
-    '• `/ganho 1000 Salário` (Lançar receita)\n' +
-    '• `/fixa 10 100 Internet` (Conta fixa dia 10)\n' +
-    '• `/investir 200 Viagem` (Guardar dinheiro na meta)', 
+    '• `/gasto 50 Pizza`\n' +
+    '• `/ganho 1000 Salário`\n' +
+    '• `/fixa 10 100 Internet`\n' +
+    '• `/investir 200 Viagem`', 
     { parse_mode: 'Markdown', ...MainMenu }
 ));
 
-// --- Transações (Dia a Dia) ---
-bot.hears('📉 Lançar Gasto', (ctx) => ctx.reply('Digite: `/gasto VALOR DESCRIÇÃO`\nEx: `/gasto 25.90 Uber`', { parse_mode: 'Markdown' }));
+// Transações
+bot.hears('📉 Lançar Gasto', (ctx) => ctx.reply('Digite: `/gasto VALOR DESCRIÇÃO`', { parse_mode: 'Markdown' }));
 bot.command('gasto', transactionController.addExpense);
 
-bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`\nEx: `/ganho 2500 Salário`', { parse_mode: 'Markdown' }));
+bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`', { parse_mode: 'Markdown' }));
 bot.command('ganho', transactionController.addIncome);
 
-// INTERATIVIDADE: Captura cliques nos botões de Categoria (Quando o bot pergunta)
+// Interatividade (Botões)
 bot.action(/set_cat:(.+)/, transactionController.handleCategoryCallback);
 
-// --- Relatórios e Dashboard ---
-// O comando 'saldo' agora chama o Dashboard completo (com orçamentos e fixas)
+// Relatórios
 bot.hears(['💰 Saldo', '/saldo', '/resumo'], reportController.getDashboard);
 bot.hears(['📄 Extrato', '/extrato'], reportController.getStatement);
 
-// --- Módulo de Metas ---
+// Metas
 bot.hears(['🎯 Metas', '/metas'], goalController.listGoals);
-bot.command('nova_meta', goalController.createGoal); // Ex: /nova_meta Carro 50000
-bot.command('investir', goalController.depositGoal); // Ex: /investir 100 Carro
+bot.command('nova_meta', goalController.createGoal);
+bot.command('investir', goalController.depositGoal);
 
-// --- Módulo de Contas Recorrentes (Fixas) ---
+// Contas Fixas
 bot.hears(['📅 Contas Fixas', '/fixas'], recurringController.listRecurring);
-bot.command('fixa', recurringController.addRecurring); // Ex: /fixa 05 150 Internet
+bot.command('fixa', recurringController.addRecurring);
 
-// --- Fallback (Resposta Padrão) ---
+// Fallback
 bot.on('text', (ctx) => {
-    // Ignora comandos iniciados com / para evitar conflito/loops
     if (ctx.message.text.startsWith('/')) return;
-    
-    ctx.reply('⚠️ Opção não reconhecida.\nPor favor, utilize os botões do menu ou digite /ajuda:', MainMenu);
+    ctx.reply('⚠️ Opção não reconhecida. Use o menu:', MainMenu);
 });
 
-// --- Tratamento de Erros Globais ---
+// Tratamento de erros do bot
 bot.catch((err, ctx) => {
-    console.error(`❌ Erro não tratado no update ${ctx.updateType}:`, err);
-    try {
-        ctx.reply("⚠️ Ocorreu um erro interno. Tente novamente em instantes.");
-    } catch (e) {
-        // Ignora erro se o usuário bloqueou o bot
-    }
+    console.error(`❌ Erro no update ${ctx.updateType}:`, err);
 });
 
 // ----------------------------------------------------------------------
-// 4. INICIALIZAÇÃO
+// 4. INICIALIZAÇÃO BLINDADA (FIX RENDER 409)
 // ----------------------------------------------------------------------
 
-// Inicia o Agendador (Cron Job) para avisar contas a vencer às 08:00
 scheduler.initScheduler(bot);
 
-bot.launch();
-console.log('🤖 Bot Finan.AI (Consultor) iniciado com sucesso!');
+// Função recursiva para tentar iniciar até conseguir
+const startBot = async () => {
+    try {
+        // Tenta limpar webhook pendente antes de iniciar polling (boa prática)
+        await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+        
+        console.log('🔄 Tentando conectar ao Telegram...');
+        await bot.launch();
+        console.log('🤖 Bot Finan.AI iniciado com sucesso!');
+    } catch (error) {
+        // Se o erro for 409 (Conflito), significa que o Render ainda não matou o bot velho
+        if (error.response && error.response.error_code === 409) {
+            console.warn('⚠️ Conflito de instância (Erro 409). O Render ainda está fechando a versão antiga.');
+            console.warn('⏳ Aguardando 5 segundos para tentar novamente...');
+            
+            // Espera 5 segundos e tenta de novo (recursão)
+            setTimeout(() => startBot(), 5000);
+        } else {
+            console.error('❌ Erro fatal ao iniciar o bot:', error);
+            // Não damos exit(1) aqui para o servidor HTTP continuar de pé e o Render não achar que falhou tudo
+        }
+    }
+};
 
-// Graceful Stop
+// Inicia a lógica blindada
+startBot();
+
+// Graceful Stop: Garante que o bot morra rápido quando o Render mandar o sinal
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
