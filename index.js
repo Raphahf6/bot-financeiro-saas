@@ -202,7 +202,6 @@ cron.schedule('0 8 * * *', async () => {
 
 // --- 🔥 TRUQUE DO RENDER (HEALTH CHECK SERVER) 🔥 ---
 // O Render exige uma porta aberta. Se não tiver, ele acha que o deploy falhou.
-const http = require('http');
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
