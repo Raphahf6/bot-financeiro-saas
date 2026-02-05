@@ -2,7 +2,7 @@ const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/helpers');
 const { MainMenu, LinkToWeb } = require('../utils/keyboards');
 
-// 1. DASHBOARD COMPLETO (Com Salário Base)
+// 1. DASHBOARD COMPLETO
 const getDashboard = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
@@ -11,23 +11,22 @@ const getDashboard = async (ctx) => {
     const primeiroDiaMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString();
 
     try {
-        // A. BUSCAR SALÁRIO BASE DO USUÁRIO
-        // Ajuste 'users' e 'salary' se seu banco usar nomes diferentes (ex: profiles, base_income)
-        const { data: userData, error: userError } = await supabase
-            .from('profiles') 
-            .select('monthly_income') // <--- Coluna do salário base
+        // A. BUSCAR SALÁRIO BASE (Corrigido para 'profiles' e 'monthly_income')
+        const { data: profileData, error: profileError } = await supabase
+            .from('profiles') // <--- Tabela correta
+            .select('monthly_income') // <--- Coluna correta
             .eq('id', userId)
             .single();
 
-        // Se não achar salário configurado, assume 0
-        const salarioBase = (userData && userData.salary) ? parseFloat(userData.salary) : 0;
+        // Se der erro ou não tiver perfil, assume 0
+        const salarioBase = (profileData && profileData.monthly_income) ? parseFloat(profileData.monthly_income) : 0;
 
         // B. BUSCAR TRANSAÇÕES DO MÊS
         const { data: transactions, error: transError } = await supabase
             .from('transactions')
             .select('amount, type')
             .eq('user_id', userId)
-            .gte('date', primeiroDiaMes); // ou created_at
+            .gte('date', primeiroDiaMes);
 
         if (transError) throw transError;
 
@@ -44,10 +43,7 @@ const getDashboard = async (ctx) => {
             }
         });
 
-        // A Receita Total é o Salário Fixo + Ganhos Extras (Freelance, Vendas, etc)
         const receitaTotal = salarioBase + ganhosExtras;
-        
-        // O Saldo é quanto sobra dessa receita
         const saldo = receitaTotal - despesas;
         
         const status = saldo >= 0 ? '🔵 Positivo' : '🔴 Negativo';
@@ -68,15 +64,14 @@ const getDashboard = async (ctx) => {
 
     } catch (err) {
         console.error('Erro no dashboard:', err);
-        ctx.reply('⚠️ Erro ao calcular resumo. Verifique se configurou seu salário no site.', MainMenu);
+        ctx.reply('⚠️ Erro ao calcular resumo. Verifique se seu perfil está completo no site.', MainMenu);
     }
 };
 
-// 2. EXTRATO (Mantido Igual)
+// 2. EXTRATO (Mantido igual)
 const getStatement = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     
-    // Busca transações recentes
     const { data } = await supabase
         .from('transactions')
         .select('*')
@@ -89,7 +84,6 @@ const getStatement = async (ctx) => {
     let msg = '📄 *Últimas Movimentações:*\n\n';
     data.forEach(t => {
         const icon = t.type === 'expense' ? '🔻' : '🟢';
-        // Formata data
         const dataFormatada = formatDate(t.date || t.created_at);
         msg += `${icon} *${formatCurrency(Math.abs(t.amount))}* - ${t.description}\n📅 ${dataFormatada}\n\n`;
     });

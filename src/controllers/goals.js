@@ -2,7 +2,6 @@ const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency } = require('../utils/helpers');
 const { MainMenu } = require('../utils/keyboards');
 
-// Auxiliar visual: [████░░░░░░] 40%
 const drawProgressBar = (current, target) => {
     const percentage = Math.min((current / target) * 100, 100);
     const filled = Math.round(percentage / 10);
@@ -10,131 +9,125 @@ const drawProgressBar = (current, target) => {
     return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${percentage.toFixed(1)}%`;
 };
 
-// 1. LISTAR METAS
 const listGoals = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
 
-    const { data: goals, error } = await supabase
+    const { data: goals } = await supabase
         .from('goals')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: true });
 
-    if (error) {
-        console.error(error);
-        return ctx.reply('Erro ao buscar metas.');
-    }
-
     if (!goals || goals.length === 0) {
-        return ctx.reply(
-            '🎯 *Sem Metas Ativas*\n\nQue tal criar uma nova?\nUse: `/nova_meta Carro 50000`', 
-            { parse_mode: 'Markdown' }
-        );
+        return ctx.reply('🎯 *Sem Metas*\nCrie uma: `/nova_meta Viagem 5000`', { parse_mode: 'Markdown' });
     }
 
-    let msg = '🎯 *Painel de Metas*\n\n';
+    let msg = '🎯 *Suas Metas*\n\n';
     goals.forEach(g => {
-        // Assume colunas: name, current_amount, target_amount
         msg += `📌 *${g.name}*\n` +
                `${drawProgressBar(g.current_amount || 0, g.target_amount)}\n` +
                `💰 ${formatCurrency(g.current_amount || 0)} de ${formatCurrency(g.target_amount)}\n` +
-               `👉 Para depositar: \`/investir ${g.id} 100\`\n\n`;
+               `👉 Investir: \`/investir 100 ${g.name}\`\n\n`; // Instrução atualizada
     });
 
     ctx.reply(msg, { parse_mode: 'Markdown', ...MainMenu });
 };
 
-// 2. CRIAR META
 const createGoal = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
-    if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
+    if (!userId) return;
 
-    const parts = ctx.message.text.split(' '); // /nova_meta Nome Valor
+    const parts = ctx.message.text.split(' ');
     const name = parts[1];
     const targetRaw = parts[2];
 
     if (!name || !targetRaw) {
-        return ctx.reply('❌ Uso incorreto.\nExemplo: `/nova_meta Viagem 5000`', { parse_mode: 'Markdown' });
+        return ctx.reply('❌ Exemplo: `/nova_meta Carro 50000`', { parse_mode: 'Markdown' });
     }
-
-    const target = parseFloat(targetRaw.replace(',', '.'));
 
     const { error } = await supabase.from('goals').insert({
         user_id: userId,
         name: name,
-        target_amount: target,
+        target_amount: parseFloat(targetRaw.replace(',', '.')),
         current_amount: 0,
-        // Adicione 'deadline' se sua tabela tiver e quiser pedir data
     });
 
-    if (error) {
-        console.error(error);
-        return ctx.reply('Erro ao criar meta. Verifique se a tabela `goals` existe.');
-    }
-
-    ctx.reply(`✅ Meta *${name}* criada! Vamos começar a poupar?`, { parse_mode: 'Markdown' });
+    if (error) return ctx.reply('Erro ao criar meta.');
+    ctx.reply(`✅ Meta *${name}* criada!`, { parse_mode: 'Markdown' });
 };
 
-// 3. INVESTIR (A Lógica Relacional)
+// --- NOVA LÓGICA DE INVESTIR POR NOME ---
 const depositGoal = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
 
-    const parts = ctx.message.text.split(' '); // /investir ID Valor
-    const goalId = parts[1];
-    const amountRaw = parts[2];
+    // Remove o comando '/investir' e limpa espaços
+    const cleanText = ctx.message.text.replace(/^\/investir\s*/i, '').trim();
+    
+    // Divide em partes: Esperamos [VALOR] [NOME DA META...]
+    const parts = cleanText.split(' ');
+    
+    // O primeiro item deve ser o valor
+    const amountRaw = parts[0];
+    const amount = parseFloat(amountRaw?.replace(',', '.'));
+    
+    // O resto é o nome da meta (pode ter espaços, ex: "Viagem Disney")
+    const goalNameQuery = parts.slice(1).join(' ');
 
-    if (!goalId || !amountRaw) {
-        return ctx.reply('❌ Uso incorreto.\nExemplo: `/investir ID_DA_META 200`\n(Veja o ID no comando /metas)', { parse_mode: 'Markdown' });
+    if (!amount || isNaN(amount) || !goalNameQuery) {
+        return ctx.reply(
+            '❌ Formato inválido.\nUse: `/investir VALOR NOME_DA_META`\nExemplo: `/investir 100 Viagem`', 
+            { parse_mode: 'Markdown' }
+        );
     }
 
-    const amount = parseFloat(amountRaw.replace(',', '.'));
-
-    // A. Busca a meta atual para validar e pegar o saldo atual
-    const { data: goal, error: fetchError } = await supabase
+    // 1. Busca a meta pelo NOME (case insensitive)
+    const { data: goals, error: fetchError } = await supabase
         .from('goals')
         .select('*')
-        .eq('id', goalId)
-        .eq('user_id', userId) // Garante que a meta é do usuário
-        .single();
+        .eq('user_id', userId)
+        .ilike('name', `%${goalNameQuery}%`); // Busca aproximada
 
-    if (fetchError || !goal) return ctx.reply('🚫 Meta não encontrada ou não pertence a você.');
+    if (fetchError || !goals || goals.length === 0) {
+        return ctx.reply(`🚫 Nenhuma meta encontrada com o nome "${goalNameQuery}".\nUse /metas para ver os nomes exatos.`);
+    }
 
-    // B. Insere no Histórico (goal_deposits)
+    // Se achar mais de uma (ex: "Viagem EUA" e "Viagem Europa" ao buscar "Viagem"), pede precisão
+    if (goals.length > 1) {
+        return ctx.reply(`⚠️ Encontrei mais de uma meta com esse nome. Seja mais específico.`);
+    }
+
+    const goal = goals[0]; // Meta encontrada
+
+    // 2. Registra o Depósito
     const { error: depositError } = await supabase
         .from('goal_deposits')
         .insert({
-            goal_id: goalId,
+            goal_id: goal.id,
             amount: amount,
-            user_id: userId, // Se sua tabela goal_deposits pedir user_id
-            created_at: new Date()
+            user_id: userId,
+            created_at: new Date() // Coluna de data do depósito
         });
 
     if (depositError) {
-        console.error('Erro goal_deposits:', depositError);
-        return ctx.reply('Erro ao registrar o depósito.');
+        console.error('Erro ao depositar:', depositError);
+        return ctx.reply('Erro ao registrar depósito.');
     }
 
-    // C. Atualiza o Total na Meta Principal (goals)
+    // 3. Atualiza o saldo da meta
     const novoTotal = (parseFloat(goal.current_amount) || 0) + amount;
     
-    const { error: updateError } = await supabase
+    await supabase
         .from('goals')
         .update({ current_amount: novoTotal })
-        .eq('id', goalId);
+        .eq('id', goal.id);
 
-    if (updateError) {
-        console.error('Erro update goals:', updateError);
-        return ctx.reply('Depósito registrado, mas erro ao atualizar saldo visual.');
-    }
-
-    // Feedback Consultivo
     ctx.reply(
-        `🚀 *Depósito Confirmado!*\n\n` +
-        `Você investiu: ${formatCurrency(amount)}\n` +
-        `Meta *${goal.name}*: ${formatCurrency(novoTotal)} / ${formatCurrency(goal.target_amount)}\n\n` +
-        `Continue assim!`, 
+        `🚀 *Investimento Realizado!*\n\n` +
+        `Meta: *${goal.name}*\n` +
+        `Valor: +${formatCurrency(amount)}\n` +
+        `Novo Saldo: ${formatCurrency(novoTotal)} / ${formatCurrency(goal.target_amount)}`,
         { parse_mode: 'Markdown' }
     );
 };
