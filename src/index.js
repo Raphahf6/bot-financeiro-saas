@@ -1,6 +1,7 @@
-require('dotenv').config(); // Tenta carregar .env da raiz
+require('dotenv').config(); // Carrega variáveis de ambiente
 const { Telegraf } = require('telegraf');
 const express = require('express');
+const http = require('http'); // <--- O Módulo que o Render prefere
 
 // Imports dos seus Módulos (Controllers e Utils)
 const authController = require('./controllers/auth');
@@ -9,24 +10,27 @@ const reportController = require('./controllers/report');
 const { MainMenu } = require('./utils/keyboards');
 
 // ----------------------------------------------------------------------
-// 1. CONFIGURAÇÃO EXPRESS (CRÍTICO PARA O RENDER FICAR 'LIVE')
+// 1. CONFIGURAÇÃO DO SERVIDOR HTTP (FIX RENDER)
 // ----------------------------------------------------------------------
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Rota Raiz: O Render acessa isso a cada poucos segundos para verificar saúde
+// Rota Raiz: O Render acessa isso para saber se está "Live"
 app.get('/', (req, res) => {
-    res.status(200).send('Bot Finan.AI está Online e Saudável! 🚀');
+    res.status(200).send('Bot Finan.AI está Online e Rodando! 🚀');
 });
 
-// Rota de Health Check secundária (padrão em alguns serviços)
+// Rota Health Check (Padrão de infraestrutura)
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
 
-// OUVINDO NA PORTA: O '0.0.0.0' é obrigatório para containers (Render/Docker)
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Servidor Web rodando na porta ${PORT}`);
+// Criação explicita do servidor HTTP (solução que funcionou pra você)
+const server = http.createServer(app);
+
+// OUVINDO NA PORTA: O '0.0.0.0' é essencial para o Render
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor HTTP rodando na porta ${PORT}`);
 });
 
 // ----------------------------------------------------------------------
@@ -39,7 +43,7 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Atualiza o Menu Azul (Lista de Comandos ao digitar /)
+// Atualiza o Menu Azul (Lista de Comandos)
 bot.telegram.setMyCommands([
     { command: 'start', description: 'Conectar Conta' },
     { command: 'menu', description: 'Abrir Menu Principal' },
@@ -68,8 +72,8 @@ bot.command('gasto', transactionController.addExpense);
 bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`\nEx: `/ganho 1000 Salário`', { parse_mode: 'Markdown' }));
 bot.command('ganho', transactionController.addIncome);
 
-// --- INTERATIVIDADE (NOVO): Captura cliques nos botões de Categoria ---
-// Essa linha faz funcionar os botões que aparecem quando o bot não entende a categoria
+// --- INTERATIVIDADE: Botões de Categoria (Ação de Clique) ---
+// Escuta quando o usuário clica em um botão de categoria (ex: "set_cat:123:45")
 bot.action(/set_cat:(.+)/, transactionController.handleCategoryCallback);
 
 // --- Relatórios Financeiros ---
@@ -81,9 +85,9 @@ bot.command('extrato', reportController.getStatement);
 
 bot.hears(['🎯 Metas', '/metas'], reportController.getGoals);
 
-// --- Fallback (Resposta Padrão para mensagens desconhecidas) ---
+// --- Fallback (Resposta Padrão) ---
 bot.on('text', (ctx) => {
-    // Ignora comandos iniciados com / para evitar conflito ou loops
+    // Ignora comandos iniciados com / para evitar conflito
     if (ctx.message.text.startsWith('/')) return;
     
     ctx.reply('⚠️ Opção não reconhecida.\nPor favor, utilize os botões do menu:', MainMenu);
@@ -92,11 +96,10 @@ bot.on('text', (ctx) => {
 // --- Tratamento de Erros Globais ---
 bot.catch((err, ctx) => {
     console.error(`❌ Erro não tratado no update ${ctx.updateType}:`, err);
-    // Tenta avisar o usuário se possível
     try {
         ctx.reply("⚠️ Ocorreu um erro interno. Tente novamente em instantes.");
     } catch (e) {
-        // Ignora erro de envio caso o usuário tenha bloqueado o bot
+        // Ignora erro de envio caso usuário tenha bloqueado
     }
 });
 
@@ -106,6 +109,6 @@ bot.catch((err, ctx) => {
 bot.launch();
 console.log('🤖 Bot Finan.AI iniciado com sucesso!');
 
-// Graceful Stop (Evita travar a porta ao reiniciar)
+// Graceful Stop (Para reiniciar sem travar a porta)
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
