@@ -1,6 +1,6 @@
 const supabase = require('../config/supabase');
 const { getUserAuth, parseValue } = require('../utils/helpers');
-const { guessCategory, getCategoryId } = require('../utils/categories');
+const { guessCategory, getCategoryId } = require('../utils/categorizer');
 const { InlineUndo } = require('../utils/keyboards');
 
 async function handleMessage(ctx) {
