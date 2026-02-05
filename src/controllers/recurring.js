@@ -2,46 +2,35 @@ const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency } = require('../utils/helpers');
 const { MainMenu } = require('../utils/keyboards');
 const { getCategoryByDescription } = require('../utils/categorizer');
+const { RecurringMenu } = require('../utils/keyboards'); // <--- MENU NOVO
 
-// 1. LISTAR CONTAS FIXAS
 const listRecurring = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
 
-    // Busca na tabela correta: recurring_bills
-    const { data: bills, error } = await supabase
+    const { data: bills } = await supabase
         .from('recurring_bills')
         .select('*')
         .eq('user_id', userId)
-        .eq('type', 'expense') // Garante que pega só despesas
-        .order('due_day', { ascending: true }); // Ordena pelo dia de vencimento
-
-    if (error) {
-        console.error(error);
-        return ctx.reply('Erro ao buscar contas fixas.');
-    }
+        .eq('type', 'expense')
+        .order('due_day', { ascending: true });
 
     if (!bills || bills.length === 0) {
         return ctx.reply(
-            '📅 *Sem Contas Fixas*\n\n' +
-            'Cadastre suas contas para o bot calcular seu custo mensal.\n' +
-            'Use: `/fixa DIA VALOR NOME`\nEx: `/fixa 10 100 Internet`', 
-            { parse_mode: 'Markdown' }
+            '📅 *Sem Contas Fixas*\nClique abaixo para adicionar:', 
+            { parse_mode: 'Markdown', ...RecurringMenu }
         );
     }
 
     let total = 0;
-    let msg = '📅 *Suas Contas Fixas (Mensais):*\n\n';
-    
+    let msg = '📅 *Suas Contas Fixas:*\n\n';
     bills.forEach(b => {
         total += parseFloat(b.amount);
-        // Mostra o dia do vencimento
         msg += `🗓️ Dia ${b.due_day}: *${b.description}* — ${formatCurrency(b.amount)}\n`;
     });
-
-    msg += `\n💰 *Total Comprometido: ${formatCurrency(total)}*`;
+    msg += `\n💰 *Total: ${formatCurrency(total)}*`;
     
-    ctx.reply(msg, { parse_mode: 'Markdown', ...MainMenu });
+    ctx.reply(msg, { parse_mode: 'Markdown', ...RecurringMenu });
 };
 
 // 2. ADICIONAR CONTA FIXA

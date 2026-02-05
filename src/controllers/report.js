@@ -1,10 +1,9 @@
 const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/helpers');
-const { MainMenu, LinkToWeb } = require('../utils/keyboards');
+const { DashboardMenu, DASHBOARD_URL } = require('../utils/keyboards');
 
 // Função visual: Barra de Progresso
 const drawBudgetBar = (spent, limit) => {
-    // Garante positivos
     const spentPos = Math.abs(spent);
     const limitPos = Math.abs(limit);
 
@@ -26,7 +25,6 @@ const getDashboard = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
 
-    // DATA: Início do mês atual
     const hoje = new Date();
     const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
     primeiroDia.setHours(0, 0, 0, 0);
@@ -35,7 +33,7 @@ const getDashboard = async (ctx) => {
     try {
         // --- 1. BUSCAR DADOS ---
 
-        // A. Perfil (Salário)
+        // A. Perfil (Salário Base)
         const { data: profile } = await supabase
             .from('profiles')
             .select('monthly_income')
@@ -61,32 +59,28 @@ const getDashboard = async (ctx) => {
         // D. Categorias (Nomes)
         const { data: categories } = await supabase
             .from('categories')
-            .select('id, name') // Não pegamos budget aqui
+            .select('id, name')
             .or(`user_id.eq.${userId},user_id.is.null`);
 
-        // E. ORÇAMENTOS (Tabela Separada 'budgets')
-        // Aqui está a correção: buscamos o limite na tabela certa
+        // E. ORÇAMENTOS (Tabela budgets)
         const { data: budgetsData } = await supabase
             .from('budgets')
             .select('category_id, limit_amount')
             .eq('user_id', userId);
 
-        // --- 2. MAPEAMENTO DE DADOS ---
+        // --- 2. PROCESSAMENTO ---
 
-        // Mapa de Orçamentos: { ID_CATEGORIA: VALOR_LIMITE }
+        // Mapa de Orçamentos
         const budgetMap = {};
         if (budgetsData) {
-            budgetsData.forEach(b => {
-                budgetMap[b.category_id] = parseFloat(b.limit_amount);
-            });
+            budgetsData.forEach(b => budgetMap[b.category_id] = parseFloat(b.limit_amount));
         }
 
-        // Mapa de Gastos por Categoria
         let ganhosExtras = 0;
         let gastosVariaveis = 0;
         const gastosPorCategoria = {};
         
-        // Inicializa contadores para categorias conhecidas
+        // Inicializa contadores
         const catNames = {};
         categories?.forEach(c => {
             catNames[c.id] = c.name;
@@ -95,7 +89,7 @@ const getDashboard = async (ctx) => {
         gastosPorCategoria['sem_categoria'] = 0;
         gastosPorCategoria['outra'] = 0;
 
-        // Processa Transações
+        // Soma Transações
         transactions?.forEach(t => {
             const valAbsoluto = Math.abs(parseFloat(t.amount));
 
@@ -105,7 +99,6 @@ const getDashboard = async (ctx) => {
                 gastosVariaveis += valAbsoluto;
                 
                 const catId = t.category_id;
-                
                 if (!catId) {
                     gastosPorCategoria['sem_categoria'] += valAbsoluto;
                 } else if (catNames[catId]) {
@@ -116,20 +109,24 @@ const getDashboard = async (ctx) => {
             }
         });
 
-        // Totais Gerais
+        // Totais
         const receitaTotal = salarioBase + ganhosExtras;
         const despesaTotal = totalFixas + gastosVariaveis; 
         const saldoPrevisto = receitaTotal - despesaTotal;
         const status = saldoPrevisto >= 0 ? '🔵 Azul' : '🔴 Vermelho';
 
-        // --- 3. VISUALIZAÇÃO ---
-        let msg = `📊 *Resumo Financeiro Mensal*\n\n`;
+        // --- 3. MONTAR VISUALIZAÇÃO ---
+
+        let msg = `📊 *[Resumo Financeiro Mensal](${DASHBOARD_URL})*\n\n`; // Link no título
+        
         msg += `💵 *Receitas:* ${formatCurrency(receitaTotal)}\n`;
         msg += `   ├ Base: ${formatCurrency(salarioBase)}\n`;
         msg += `   └ Extras: ${formatCurrency(ganhosExtras)}\n`;
+        
         msg += `\n📉 *Despesas:* ${formatCurrency(despesaTotal)}\n`;
         msg += `   ├ Fixas: ${formatCurrency(totalFixas)}\n`;
         msg += `   └ Variáveis: ${formatCurrency(gastosVariaveis)}\n`;
+        
         msg += `───────────────────\n`;
         msg += `⚖️ *Saldo Disp: ${formatCurrency(saldoPrevisto)}*\n`;
         msg += `Status: ${status}\n\n`;
@@ -138,13 +135,11 @@ const getDashboard = async (ctx) => {
 
         let algumItem = false;
 
-        // Itera sobre todas as categorias disponíveis
+        // Categorias com Orçamento ou Gasto
         categories?.forEach(cat => {
             const gasto = gastosPorCategoria[cat.id] || 0;
-            // Pega o limite do MAPA que criamos via tabela 'budgets'
             const limite = budgetMap[cat.id] || 0; 
 
-            // Mostra se tiver Limite Definido OU Gasto realizado
             if (limite > 0 || gasto > 0) {
                 algumItem = true;
                 msg += `\n🏷️ *${cat.name}*`;
@@ -153,47 +148,43 @@ const getDashboard = async (ctx) => {
                     const restante = limite - gasto;
                     msg += drawBudgetBar(gasto, limite);
                     msg += `\n   ${formatCurrency(gasto)} / ${formatCurrency(limite)}`;
-                    
-                    if (restante < 0) {
-                        msg += ` (🚨 ${formatCurrency(restante)})`; // Valor negativo já tem sinal
-                    } else {
-                        msg += ` (✅ Restam ${formatCurrency(restante)})`;
-                    }
+                    if (restante < 0) msg += ` (🚨 ${formatCurrency(restante)})`;
+                    else msg += ` (✅ Restam ${formatCurrency(restante)})`;
                 } else {
                     msg += `\n   ${formatCurrency(gasto)} (Sem limite)`;
                 }
             }
         });
 
-        // Gastos avulsos
         if (gastosPorCategoria['sem_categoria'] > 0) {
             algumItem = true;
             msg += `\n\n⚠️ *Sem Categoria:* ${formatCurrency(gastosPorCategoria['sem_categoria'])}`;
         }
-        
         if (gastosPorCategoria['outra'] > 0) {
             algumItem = true;
             msg += `\n\n❓ *Outras:* ${formatCurrency(gastosPorCategoria['outra'])}`;
         }
 
-        if (!algumItem) {
-            msg += `_Nenhuma movimentação ou orçamento ativo._\n`;
-        }
+        if (!algumItem) msg += `_Sem movimentações este mês._\n`;
 
-        ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
+        // Envia com o MENU DE CONTEXTO (DashboardMenu)
+        ctx.reply(msg, { 
+            parse_mode: 'Markdown', 
+            ...DashboardMenu 
+        });
 
     } catch (err) {
         console.error('Erro Dashboard:', err);
-        ctx.reply('⚠️ Erro ao calcular dashboard.', MainMenu);
+        ctx.reply('⚠️ Erro ao calcular.', DashboardMenu);
     }
 };
 
-// 2. EXTRATO (Mantido)
+// 2. EXTRATO
 const getStatement = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     const { data } = await supabase.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(10);
 
-    if (!data || data.length === 0) return ctx.reply('📭 Extrato vazio.', MainMenu);
+    if (!data || data.length === 0) return ctx.reply('📭 Extrato vazio.', DashboardMenu);
 
     let msg = '📄 *Extrato Recente:*\n\n';
     data.forEach(t => {
@@ -201,7 +192,8 @@ const getStatement = async (ctx) => {
         const dataRef = t.date || t.created_at; 
         msg += `${icon} *${t.description}* — ${formatCurrency(Math.abs(t.amount))}\n📅 ${formatDate(dataRef)}\n\n`;
     });
-    ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
+    
+    ctx.reply(msg, { parse_mode: 'Markdown', ...DashboardMenu });
 };
 
 module.exports = { getDashboard, getStatement };
