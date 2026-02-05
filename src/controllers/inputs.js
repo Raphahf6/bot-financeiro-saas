@@ -19,7 +19,7 @@ async function handleMessage(ctx) {
   const matchGasto = text.match(/^(?:g|gastei|comprei|paguei)?\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:em|no|na)?\s*(.*)/i);
   
   // 2. Detectar GANHO (r 1000 salario / ganhei 50 pix)
-  const matchReceita = text.match(/^(?:r|receita|ganhei|recebi)\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:de)?\s*(.*)/i);
+  const matchReceita = text.match(/^(?:r|receita|ganhei|recebi|entrada)\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:de)?\s*(.*)/i);
 
   // --- PROCESSAMENTO ---
 

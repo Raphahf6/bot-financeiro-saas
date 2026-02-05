@@ -1,82 +1,76 @@
 require('dotenv').config();
-const { Telegraf } = require('telegraf');
-const http = require('http');
-const cron = require('node-cron');
+const { Telegraf, session } = require('telegraf');
 const supabase = require('./config/supabase');
+const { MainMenu } = require('./utils/keyboards');
+const authMiddleware = require('./middlewares/auth');
+const transactionController = require('./controllers/transaction');
+const reportController = require('./controllers/report');
+const { initScheduler } = require('./services/scheduler');
 
-const reports = require('./controllers/reports');
-const inputs = require('./controllers/inputs');
-const { MainMenu } = require('./utils/keyboards'); // Importa o menu
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  throw new Error('TELEGRAM_BOT_TOKEN não definido no .env');
+}
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-console.log('🤖 Bot Finan.AI 2.0 Iniciado...');
 
-// --- COMANDO START (Autenticação) ---
+// --- SETUP ---
+bot.use(session());
+
+// --- COMANDO DE CONEXÃO (Start com Token) ---
 bot.start(async (ctx) => {
   const args = ctx.message.text.split(' ');
-  const token = args[1]?.trim();
+  const token = args[1]; // Pega o token após /start
+  
+  // Se tiver token, tenta vincular
+  if (token) {
+    const { data } = await supabase.from('user_integrations').select('*').eq('connection_token', token).maybeSingle();
+    
+    if (data) {
+      await supabase.from('user_integrations').update({ 
+        telegram_chat_id: ctx.chat.id.toString(), 
+        telegram_username: ctx.from.username || 'User', 
+        connection_token: null // Limpa o token por segurança
+      }).eq('id', data.id);
 
-  if (!token) {
-    return ctx.reply(
-      `👋 **Bem-vindo ao Finan.AI!**\n\nPara conectar sua conta:\n1. Acesse o sistema web\n2. Vá em Configurações > Integrações\n3. Clique em "Conectar Telegram"`,
-      { parse_mode: 'Markdown' }
-    );
+      return ctx.reply('✅ **Finan.AI Conectado com Sucesso!**\n\nSeu assistente financeiro está pronto para usar.', MainMenu);
+    }
+    return ctx.reply('❌ Token inválido ou expirado. Gere um novo no site.');
   }
-
-  const { data: integration } = await supabase.from('user_integrations').select('*').eq('connection_token', token).single();
   
-  if (!integration) return ctx.reply('❌ Token inválido ou expirado.');
-  
-  await supabase.from('user_integrations').update({ 
-    telegram_chat_id: ctx.chat.id.toString(), 
-    telegram_username: ctx.from.username, 
-    connection_token: null 
-  }).eq('id', integration.id);
-  
-  ctx.reply(
-    `✅ **Conectado com sucesso!**\nAgora você pode usar o menu abaixo para controlar suas finanças.`,
-    MainMenu // Mostra o teclado
-  );
+  // Se for start normal sem token
+  ctx.reply('👋 Olá! Sou o bot do Finan.AI.\n\nVocê precisa conectar sua conta pelo site primeiro.', MainMenu);
 });
 
-// --- MENU HANDLERS ---
-bot.hears('📉 Registrar Gasto', ctx => ctx.reply('Digite o valor e o nome. Ex: `45 pizza`', { parse_mode: 'Markdown' }));
-bot.hears('📈 Registrar Ganho', ctx => ctx.reply('Digite o valor e a origem. Ex: `ganhei 100 pix`', { parse_mode: 'Markdown' }));
-bot.hears('📊 Ver Saldo', reports.handleSaldo);
-bot.hears('📝 Extrato', reports.handleExtrato);
-bot.hears('❓ Ajuda', ctx => ctx.reply(
-  `🤖 **Comandos Rápidos:**\n\n` +
-  `• Digite apenas o valor e o item para gastar: \n   Ex: _30 padaria_\n` +
-  `• Para ganhos, use 'ganhei' ou 'recebi':\n   Ex: _ganhei 500 freela_\n\n` +
-  `Use o menu abaixo para navegar.`,
-  { parse_mode: 'Markdown' }
-));
-bot.hears('🎯 Metas', async (ctx) => {
-    // Busca simples de metas para exibir
-    const userId = await require('./utils/helpers').getUserAuth(ctx);
-    if(!userId) return;
-    const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId);
-    if(!goals.length) return ctx.reply("Você não tem metas cadastradas.");
-    let msg = "🎯 **Suas Metas:**\n\n";
-    goals.forEach(g => {
-        const pct = Math.round((g.current_amount / g.target_amount) * 100);
-        msg += `• ${g.name}: R$ ${g.current_amount} / ${g.target_amount} (${pct}%)\n`;
-    });
-    ctx.reply(msg, { parse_mode: 'Markdown' });
-});
+// --- MIDDLEWARE DE SEGURANÇA (Protege tudo abaixo) ---
+bot.use(authMiddleware);
+
+// --- MENU HANDLERS (Comandos de Texto) ---
+bot.hears('📉 Novo Gasto', ctx => ctx.reply('✍️ Digite o valor e o nome.\nEx: `45 pizza` ou `200 luz`', { parse_mode: 'Markdown' }));
+bot.hears('📈 Nova Entrada', ctx => ctx.reply('✍️ Digite "ganhei" valor e origem.\nEx: `ganhei 500 freela`', { parse_mode: 'Markdown' }));
+
+// Handlers de Relatório
+bot.hears('💰 Ver Saldo', reportController.handleBalance); 
+bot.hears('📄 Extrato', reportController.handleExtract);
+bot.hears('📅 Contas Fixas', reportController.handleBills); 
+bot.hears('🎯 Metas', reportController.handleGoals); 
+
+// --- FLUXO DE TRANSAÇÃO (TEXTO LIVRE) ---
+bot.on('text', transactionController.handleMessage);
 
 // --- AÇÕES DE BOTÕES (CALLBACKS) ---
-bot.action(/^undo_/, reports.handleCallbackUndo); // Captura cliques no botão "Desfazer"
+bot.action(/^undo_/, transactionController.undoTransaction);
+bot.action('view_balance', reportController.handleBalance);
+bot.action('view_extract', reportController.handleExtract);
+// bot.action('deposit_goal...', ...); // Implementar lógica de depósito em metas futuramente
 
-// --- TEXTO LIVRE ---
-bot.on('text', inputs.handleMessage);
-
-// --- SERVIDOR HTTP (Keep Alive) ---
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => { res.writeHead(200); res.end('Finan.AI Bot Online'); }).listen(PORT);
+// --- SERVIÇOS AGENDADOS ---
+initScheduler(bot);
 
 // --- INICIALIZAÇÃO ---
-bot.launch({ dropPendingUpdates: true });
+bot.launch({ dropPendingUpdates: true })
+  .then(() => console.log('🚀 Finan.AI Bot Profissional Online!'))
+  .catch((err) => console.error('Erro ao iniciar bot:', err));
 
+// Graceful Stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
