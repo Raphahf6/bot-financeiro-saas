@@ -1,44 +1,33 @@
 require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf } = require('telegraf');
 const { createClient } = require('@supabase/supabase-js');
+const cron = require('node-cron'); // Importa o agendador
 
-// Verificação de segurança inicial
+// Verificação de segurança
 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
-  console.error('❌ ERRO: Variáveis de ambiente (.env) não configuradas corretamente.');
+  console.error('❌ ERRO: Variáveis de ambiente (.env) não configuradas.');
   process.exit(1);
 }
 
-// Inicialização dos Clientes
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-console.log('🤖 Bot Financeiro Iniciando...');
+console.log('🤖 Bot Financeiro Operacional...');
 
-// --- COMANDO: /start (O Aperto de Mão) ---
+// --- COMANDO: /start (Conexão) ---
 bot.start(async (ctx) => {
-  const message = ctx.message.text; // Ex: "/start CONNECT-1234"
+  const message = ctx.message.text; 
   const args = message.split(' ');
   const telegramChatId = ctx.chat.id.toString();
   const firstName = ctx.from.first_name || 'Usuário';
-  const username = ctx.from.username || 'SemUsername';
 
-  // 1. Se o usuário mandou apenas "/start" (sem token)
   if (args.length < 2) {
-    return ctx.reply(
-      `Olá, ${firstName}! 👋\n\n` +
-      `Eu sou seu Assistente Financeiro IA.\n\n` +
-      `Para me conectar à sua conta, você precisa ir no painel Web, copiar seu código de conexão e enviar aqui.\n\n` +
-      `Exemplo:\n` +
-      `/start CONNECT-1234`
-    );
+    return ctx.reply(`Olá, ${firstName}! Para conectar, gere seu token no site e envie: /start SEU-TOKEN`);
   }
 
-  const token = args[1].trim(); // O código: CONNECT-1234
+  const token = args[1].trim();
 
   try {
-    ctx.reply('🔄 Verificando seu token de conexão...');
-
-    // 2. Busca no banco quem gerou esse token
     const { data: integration, error } = await supabase
       .from('user_integrations')
       .select('*')
@@ -46,71 +35,107 @@ bot.start(async (ctx) => {
       .single();
 
     if (error || !integration) {
-      console.log(`Tentativa falha de conexão com token: ${token}`);
-      return ctx.reply('❌ Token inválido ou expirado. Por favor, gere um novo código no site e tente novamente.');
+      return ctx.reply('❌ Token inválido ou expirado. Gere um novo no site.');
     }
 
-    // 3. Vínculo encontrado! Atualiza o Chat ID e limpa o token usado
-    const { error: updateError } = await supabase
+    await supabase
       .from('user_integrations')
       .update({
         telegram_chat_id: telegramChatId,
-        telegram_username: username,
-        connection_token: null // Token é descartável, segurança máxima
+        telegram_username: ctx.from.username,
+        connection_token: null 
       })
       .eq('id', integration.id);
 
-    if (updateError) throw updateError;
-
-    // 4. Sucesso! Busca o nome do perfil para dar um oi personalizado
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('monthly_income')
-      .eq('id', integration.user_id)
-      .single();
-
-    const rendaFormatada = profile?.monthly_income 
-      ? `R$ ${profile.monthly_income.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` 
-      : 'Não configurada';
-
-    await ctx.reply(
-      `✅ **Conexão Realizada com Sucesso!**\n\n` +
-      `Olá novamente, ${firstName}! Agora seu Telegram está vinculado à sua conta financeira.\n\n` +
-      `📊 **Status Atual:**\n` +
-      `• Renda Configurada: ${rendaFormatada}\n` +
-      `• ID de Conexão: Protegido 🔒\n\n` +
-      `A partir de agora, eu te avisarei sempre que uma conta estiver prestes a vencer.`
-    );
-
-    console.log(`✅ Usuário ${username} (${telegramChatId}) conectado via token ${token}`);
+    ctx.reply(`✅ Conectado com sucesso, ${firstName}! Agora eu vou te avisar das suas contas.`);
+    console.log(`✅ Usuário ${firstName} conectado.`);
 
   } catch (err) {
-    console.error('Erro no processo de conexão:', err);
-    ctx.reply('⚠️ Ocorreu um erro interno ao tentar conectar. Tente novamente mais tarde.');
+    console.error(err);
+    ctx.reply('Erro ao conectar. Tente novamente.');
   }
 });
 
-// --- COMANDO: /status (Teste rápido) ---
-bot.command('status', async (ctx) => {
-  const telegramChatId = ctx.chat.id.toString();
+// --- COMANDO: /hoje (Verificação manual) ---
+bot.command('hoje', async (ctx) => {
+  await checarContasUsuario(ctx.chat.id.toString(), ctx);
+});
 
-  // Verifica se o usuário já está conectado
-  const { data: integration } = await supabase
+// --- SISTEMA DE AGENDAMENTO (CRON JOB) ---
+// Roda todos os dias às 09:00 da manhã
+cron.schedule('0 9 * * *', async () => {
+  console.log('⏰ Iniciando verificação diária de contas...');
+  
+  // 1. Busca todos os usuários conectados
+  const { data: integrations } = await supabase
     .from('user_integrations')
-    .select('user_id')
-    .eq('telegram_chat_id', telegramChatId)
-    .single();
+    .select('*')
+    .not('telegram_chat_id', 'is', null);
 
-  if (!integration) {
-    return ctx.reply('Você ainda não está conectado. Use o comando /start SEU-TOKEN para começar.');
+  if (!integrations) return;
+
+  // 2. Verifica contas para cada usuário
+  for (const user of integrations) {
+    try {
+      await checarContasUsuario(user.telegram_chat_id, bot.telegram, user.user_id);
+    } catch (err) {
+      console.error(`Erro ao processar usuário ${user.user_id}:`, err);
+    }
   }
-
-  ctx.reply('✅ Sistema Operacional. Você está conectado e pronto para receber alertas.');
 });
 
-// Inicia o loop do bot
+// --- FUNÇÃO CORE: Checar Contas ---
+async function checarContasUsuario(telegramChatId, telegramInterface, userId = null) {
+  // Se o userId não for passado, buscamos pelo chatId
+  let targetUserId = userId;
+  
+  if (!targetUserId) {
+    const { data: integration } = await supabase
+      .from('user_integrations')
+      .select('user_id')
+      .eq('telegram_chat_id', telegramChatId)
+      .single();
+    if (!integration) return telegramInterface.sendMessage(telegramChatId, "Você não está conectado.");
+    targetUserId = integration.user_id;
+  }
+
+  const hoje = new Date();
+  const diaHoje = hoje.getDate(); // Ex: 5
+
+  // Busca contas que vencem hoje
+  const { data: bills } = await supabase
+    .from('recurring_bills')
+    .select('*')
+    .eq('user_id', targetUserId)
+    .eq('due_day', diaHoje);
+
+  if (bills && bills.length > 0) {
+    let msg = `📅 **Atenção! Contas vencendo hoje (Dia ${diaHoje}):**\n\n`;
+    let total = 0;
+
+    bills.forEach(bill => {
+      msg += `• ${bill.description}: R$ ${bill.amount}\n`;
+      total += parseFloat(bill.amount);
+    });
+
+    msg += `\n💰 **Total a pagar:** R$ ${total.toFixed(2)}`;
+    msg += `\n\nNão esqueça de pagar para evitar juros!`;
+
+    // Envia a mensagem (seja via ctx ou via bot.telegram direto)
+    if (telegramInterface.sendMessage) {
+        await telegramInterface.sendMessage(telegramChatId, msg);
+    } else {
+        await telegramInterface.reply(msg);
+    }
+  } else {
+    // Se for comando manual (/hoje), avisa que não tem nada. Se for automático, fica quieto.
+    if (telegramInterface.reply) {
+        telegramInterface.reply(`✨ Nenhuma conta fixa vence hoje (Dia ${diaHoje}).`);
+    }
+  }
+}
+
 bot.launch();
 
-// Tratamento de Encerramento (Graceful Stop)
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
