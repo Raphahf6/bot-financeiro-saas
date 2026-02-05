@@ -1,73 +1,67 @@
 const supabase = require('../config/supabase');
-const { detectCategory } = require('../utils/categorizer');
-const { AfterTransactionMenu } = require('../utils/keyboards');
+const { MESSAGES } = require('../config/constants');
+const { formatCurrency } = require('../utils/helpers');
+const { parseTransactionInput } = require('./inputs');
+const { mainKeyboard } = require('../utils/keyboards');
 
-// Regex flexível para capturar valores e descrições
-const EXPENSE_REGEX = /^(?:g|gastei|paguei|comprei)?\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:no|na|em)?\s*(.*)/i;
-const INCOME_REGEX = /^(?:r|receita|ganhei|recebi)\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:de)?\s*(.*)/i;
+// Adicionar Despesa
+const addExpense = async (ctx) => {
+    const input = parseTransactionInput(ctx.message.text);
 
-const handleMessage = async (ctx) => {
-  const text = ctx.message.text;
-  const userId = ctx.session.userId;
+    if (!input.isValid) {
+        return ctx.reply(MESSAGES.ERROR_INVALID_INPUT, { parse_mode: 'Markdown' });
+    }
 
-  // Ignora se for comando de menu
-  if (['📉 Novo Gasto', '📈 Nova Entrada', '💰 Ver Saldo', '📄 Extrato', '🎯 Metas', '📅 Contas Fixas'].includes(text)) return;
+    try {
+        const { error } = await supabase
+            .from('transactions') // VERIFIQUE O NOME DA SUA TABELA
+            .insert({
+                user_id: ctx.from.id.toString(),
+                amount: -input.amount, // Negativo para gasto
+                description: input.description,
+                type: 'expense',
+                created_at: new Date()
+            });
 
-  // 1. Identificar Receita
-  const incomeMatch = text.match(INCOME_REGEX);
-  if (incomeMatch) {
-    const amount = parseFloat(incomeMatch[1].replace(',', '.'));
-    const description = incomeMatch[2] || 'Entrada Avulsa';
+        if (error) throw error;
 
-    const { data, error } = await supabase.from('transactions').insert({
-      user_id: userId, amount, description, type: 'income', date: new Date().toISOString()
-    }).select().single();
+        const valorFormatado = formatCurrency(input.amount);
+        ctx.reply(MESSAGES.SAVED_EXPENSE(valorFormatado, input.description), { parse_mode: 'Markdown', ...mainKeyboard });
 
-    if (error) return ctx.reply('❌ Erro ao salvar receita.');
-
-    return ctx.reply(
-      `📈 **Receita de R$ ${amount.toFixed(2)} salva!**\n📝 Descrição: ${description}`,
-      { parse_mode: 'Markdown', ...AfterTransactionMenu(data.id) }
-    );
-  }
-
-  // 2. Identificar Gasto
-  const expenseMatch = text.match(EXPENSE_REGEX);
-  if (expenseMatch) {
-    const amount = parseFloat(expenseMatch[1].replace(',', '.'));
-    const description = expenseMatch[2] || 'Geral';
-    const category = await detectCategory(description);
-
-    const { data, error } = await supabase.from('transactions').insert({
-      user_id: userId,
-      amount,
-      description,
-      type: 'expense',
-      category_id: category.id,
-      date: new Date().toISOString()
-    }).select().single();
-
-    if (error) return ctx.reply('❌ Erro ao salvar gasto.');
-
-    return ctx.reply(
-      `📉 **Gasto de R$ ${amount.toFixed(2)} salvo!**\n` + 
-      `📂 Categoria: *${category.name}*\n` +
-      `📝 Item: ${description}`,
-      { parse_mode: 'Markdown', ...AfterTransactionMenu(data.id) }
-    );
-  }
+    } catch (err) {
+        console.error('Erro ao salvar despesa:', err);
+        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
+    }
 };
 
-const undoTransaction = async (ctx) => {
-  try {
-    const id = ctx.match[1].replace('undo_', '');
-    await supabase.from('transactions').delete().eq('id', id);
-    await ctx.answerCbQuery('Transação apagada! 🗑️');
-    await ctx.editMessageText('✅ **Registro desfeito com sucesso.**', { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error(error);
-    await ctx.answerCbQuery('Erro ao desfazer.');
-  }
+// Adicionar Ganho
+const addIncome = async (ctx) => {
+    const input = parseTransactionInput(ctx.message.text);
+
+    if (!input.isValid) {
+        return ctx.reply(MESSAGES.ERROR_INVALID_INPUT, { parse_mode: 'Markdown' });
+    }
+
+    try {
+        const { error } = await supabase
+            .from('transactions')
+            .insert({
+                user_id: ctx.from.id.toString(),
+                amount: input.amount, // Positivo para ganho
+                description: input.description,
+                type: 'income',
+                created_at: new Date()
+            });
+
+        if (error) throw error;
+
+        const valorFormatado = formatCurrency(input.amount);
+        ctx.reply(MESSAGES.SAVED_INCOME(valorFormatado, input.description), { parse_mode: 'Markdown', ...mainKeyboard });
+
+    } catch (err) {
+        console.error('Erro ao salvar ganho:', err);
+        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
+    }
 };
 
-module.exports = { handleMessage, undoTransaction };
+module.exports = { addExpense, addIncome };

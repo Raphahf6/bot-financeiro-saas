@@ -1,104 +1,68 @@
 const supabase = require('../config/supabase');
-const { ReportMenu, ExtractMenu, GoalsListMenu } = require('../utils/keyboards');
+const { formatCurrency, formatDate } = require('../utils/helpers');
+const { mainKeyboard } = require('../utils/keyboards');
+const { MESSAGES } = require('../config/constants');
 
 // Ver Saldo
-const handleBalance = async (ctx) => {
-  const userId = ctx.session.userId;
-  const now = new Date();
-  const startMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+const getBalance = async (ctx) => {
+    try {
+        const { data, error } = await supabase
+            .from('transactions')
+            .select('amount')
+            .eq('user_id', ctx.from.id.toString());
 
-  // Busca transações do mês
-  const { data: transactions } = await supabase
-    .from('transactions')
-    .select('amount, type')
-    .eq('user_id', userId)
-    .gte('date', startMonth);
+        if (error) throw error;
 
-  let income = 0, expense = 0;
-  if(transactions) {
-    transactions.forEach(t => t.type === 'income' ? income += Number(t.amount) : expense += Number(t.amount));
-  }
-  
-  const balance = income - expense;
+        // Soma tudo
+        const total = data.reduce((acc, curr) => acc + curr.amount, 0);
+        
+        ctx.reply(`💰 *Saldo Atual:* ${formatCurrency(total)}`, { parse_mode: 'Markdown', ...mainKeyboard });
 
-  await ctx.reply(
-    `💰 **Balanço de ${now.toLocaleString('pt-BR', { month: 'long' })}**\n\n` +
-    `🟢 Entradas: R$ ${income.toFixed(2)}\n` +
-    `🔴 Saídas:   R$ ${expense.toFixed(2)}\n` +
-    `───────────────\n` +
-    `💵 **Saldo:   R$ ${balance.toFixed(2)}**\n\n` +
-    `_Para análises detalhadas, acesse o painel web._`,
-    { parse_mode: 'Markdown', ...ReportMenu }
-  );
+    } catch (err) {
+        console.error('Erro ao buscar saldo:', err);
+        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
+    }
 };
 
 // Ver Extrato
-const handleExtract = async (ctx) => {
-  const userId = ctx.session.userId;
-  
-  const { data: transactions } = await supabase
-    .from('transactions')
-    .select('*, categories(name)')
-    .eq('user_id', userId)
-    .order('date', { ascending: false })
-    .limit(10);
+const getStatement = async (ctx) => {
+    try {
+        const { data, error } = await supabase
+            .from('transactions')
+            .select('*')
+            .eq('user_id', ctx.from.id.toString())
+            .order('created_at', { ascending: false })
+            .limit(5);
 
-  if (!transactions || transactions.length === 0) {
-    return ctx.reply("📭 Nenhuma movimentação recente.", { ...ExtractMenu });
-  }
+        if (error) throw error;
 
-  let msg = `📄 **Últimos 10 Lançamentos**\n\n`;
-  
-  transactions.forEach(t => {
-    const icon = t.type === 'income' ? '🟢' : '🔴';
-    const cat = t.categories?.name ? `_${t.categories.name}_` : '';
-    const val = Number(t.amount).toFixed(2);
-    const date = new Date(t.date).toLocaleDateString('pt-BR', {day: '2-digit', month: '2-digit'});
-    
-    msg += `${icon} **R$ ${val}** • ${t.description} ${cat}\n   📅 ${date}\n\n`;
-  });
+        if (!data || data.length === 0) {
+            return ctx.reply(MESSAGES.NO_DATA, mainKeyboard);
+        }
 
-  await ctx.reply(msg, { parse_mode: 'Markdown', ...ExtractMenu });
+        let msg = '📄 *Últimas 5 Movimentações:*\n\n';
+        data.forEach(t => {
+            const icon = t.type === 'expense' ? '🔻' : '🟢';
+            msg += `${icon} *${formatCurrency(t.amount)}* - ${t.description}\n📅 ${formatDate(t.created_at)}\n\n`;
+        });
+
+        ctx.reply(msg, { parse_mode: 'Markdown', ...mainKeyboard });
+
+    } catch (err) {
+        console.error('Erro ao buscar extrato:', err);
+        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
+    }
 };
 
-// Ver Metas
-const handleGoals = async (ctx) => {
-  const userId = ctx.session.userId;
-  const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId);
-
-  if (!goals || goals.length === 0) {
-    return ctx.reply("🎯 Você não tem metas ativas.", { parse_mode: 'Markdown' });
-  }
-
-  let msg = "🎯 **Suas Metas:**\n\n";
-  goals.forEach(g => {
-    const pct = Math.round((g.current_amount / g.target_amount) * 100);
-    msg += `• *${g.name}*: R$ ${g.current_amount} / ${g.target_amount} (${pct}%)\n`;
-  });
-
-  await ctx.reply(msg, { parse_mode: 'Markdown', ...GoalsListMenu(goals) });
+// Ver Metas (Exemplo Fixo por enquanto, pois não temos tabela de metas definida)
+const getGoals = async (ctx) => {
+    ctx.reply(
+        '🎯 *Suas Metas (Beta)*\n\n' +
+        '1. Reserva de Emergência: [====..] 60%\n' +
+        '2. Viagem Férias: [==....] 30%\n\n' +
+        '_Funcionalidade de cadastro de metas em desenvolvimento._',
+        { parse_mode: 'Markdown', ...mainKeyboard }
+    );
 };
 
-// Ver Contas Fixas
-const handleBills = async (ctx) => {
-  const userId = ctx.session.userId;
-  const today = new Date().getDate();
-  
-  const { data: bills } = await supabase
-    .from('recurring_bills')
-    .select('*')
-    .eq('user_id', userId)
-    .order('due_day', { ascending: true });
-
-  if (!bills || bills.length === 0) return ctx.reply("📅 Nenhuma conta fixa cadastrada.");
-
-  let msg = "📅 **Contas Fixas do Mês:**\n\n";
-  bills.forEach(b => {
-    const icon = b.due_day === today ? '⚠️' : b.due_day < today ? '✅' : '⏳';
-    msg += `${icon} Dia ${b.due_day}: **${b.description}** (R$ ${Number(b.amount).toFixed(2)})\n`;
-  });
-
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-};
-
-module.exports = { handleBalance, handleExtract, handleGoals, handleBills };
+module.exports = { getBalance, getStatement, getGoals };

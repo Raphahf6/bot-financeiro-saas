@@ -1,21 +1,18 @@
-const supabase = require('../config/supabase');
+const formatCurrency = (value) => {
+    return new Intl.NumberFormat('pt-BR', {
+        style: 'currency',
+        currency: 'BRL'
+    }).format(value);
+};
 
-// Converte texto "1.200,50" ou "50" para float JS (1200.50)
-function parseValue(str) {
-  if (!str) return 0;
-  return parseFloat(str.replace('R$', '').replace(/\./g, '').replace(',', '.').trim());
-}
+const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+};
 
-// Verifica se o usuário do Telegram está vinculado ao sistema
-async function getUserAuth(ctx) {
-  const telegramChatId = ctx.chat.id.toString();
-  const { data } = await supabase
-    .from('user_integrations')
-    .select('user_id')
-    .eq('telegram_chat_id', telegramChatId)
-    .single();
-    
-  return data ? data.user_id : null;
-}
-
-module.exports = { parseValue, getUserAuth };
+module.exports = { formatCurrency, formatDate };
