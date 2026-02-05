@@ -1,78 +1,87 @@
 const supabase = require('../config/supabase');
 const { getUserAuth, parseValue } = require('../utils/helpers');
 const { guessCategory, getCategoryId } = require('../utils/categories');
+const { InlineUndo } = require('../utils/keyboards');
 
 async function handleMessage(ctx) {
   const text = ctx.message.text.trim();
-  if (text.startsWith('/')) return; // Ignora comandos
   
-  const userId = await getUserAuth(ctx);
-  if (!userId) return ctx.reply('🔒 Use /start SEU-TOKEN');
+  // Ignora comandos de barra (tratados no index.js) mas processa textos dos botões de menu
+  if (text.startsWith('/') && !['/start', '/ajuda'].includes(text)) return;
 
-  // --- REGEX 1: GASTOS (g 50 pizza) ---
-  const matchGasto = text.match(/^(?:g|gasto)\s+(\d+(?:[.,]\d{1,2})?)\s+(.*)/i);
-  if (matchGasto) {
+  const userId = await getUserAuth(ctx);
+  if (!userId) return ctx.reply('🔒 Olá! Para começar, vá no sistema web > Configurações > Telegram e pegue seu token.');
+
+  // --- LÓGICA DE INTERPRETAÇÃO INTELIGENTE ---
+  
+  // 1. Detectar GASTO (g 50 pizza / gastei 50 na padaria / 50 padaria)
+  // Regex flexível: aceita "g", "gastei", "comprei" ou começa direto com numero
+  const matchGasto = text.match(/^(?:g|gastei|comprei|paguei)?\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:em|no|na)?\s*(.*)/i);
+  
+  // 2. Detectar GANHO (r 1000 salario / ganhei 50 pix)
+  const matchReceita = text.match(/^(?:r|receita|ganhei|recebi)\s*R?\$?\s*(\d+(?:[.,]\d{1,2})?)\s+(?:de)?\s*(.*)/i);
+
+  // --- PROCESSAMENTO ---
+
+  // CASO: GASTO
+  if (matchGasto && !text.match(/^(?:r|receita|ganhei|recebi)/i)) { 
     const amount = parseValue(matchGasto[1]);
-    const description = matchGasto[2];
+    const description = matchGasto[2] || 'Geral';
+    
     const catName = await guessCategory(description);
     const catId = await getCategoryId(catName);
 
-    const { error } = await supabase.from('transactions').insert({
-      user_id: userId, description, amount, type: 'expense', category_id: catId, date: new Date().toISOString()
-    });
+    const { data, error } = await supabase.from('transactions').insert({
+      user_id: userId,
+      description,
+      amount,
+      type: 'expense',
+      category_id: catId,
+      date: new Date().toISOString()
+    }).select().single();
 
-    if (error) return ctx.reply("❌ Erro ao salvar.");
-    return ctx.reply(`💸 **Gasto Registrado!**\n📝 ${description}\n💲 R$ ${amount.toFixed(2)}\n📂 Categoria: ${catName}`);
+    if (error) return ctx.reply("❌ Ops, erro ao salvar.");
+
+    return ctx.reply(
+      `💸 **Gasto de R$ ${amount.toFixed(2)}**\n` +
+      `🏷️ *${description}* (${catName})`, 
+      { parse_mode: 'Markdown', ...InlineUndo(data.id) }
+    );
   }
 
-  // --- REGEX 2: RECEITAS (r 500 freela) ---
-  const matchReceita = text.match(/^(?:r|receita|ganhei)\s+(\d+(?:[.,]\d{1,2})?)\s+(.*)/i);
+  // CASO: RECEITA
   if (matchReceita) {
     const amount = parseValue(matchReceita[1]);
-    const description = matchReceita[2];
-    
-    const { error } = await supabase.from('transactions').insert({
-      user_id: userId, description, amount, type: 'income', category_id: null, date: new Date().toISOString()
-    });
+    const description = matchReceita[2] || 'Entrada';
 
-    if (error) return ctx.reply("❌ Erro ao salvar.");
-    return ctx.reply(`💰 **Receita Registrada!**\n📝 ${description}\n💲 R$ ${amount.toFixed(2)}`);
+    const { data, error } = await supabase.from('transactions').insert({
+      user_id: userId,
+      description,
+      amount,
+      type: 'income',
+      category_id: null,
+      date: new Date().toISOString()
+    }).select().single();
+
+    if (error) return ctx.reply("❌ Ops, erro ao salvar.");
+
+    return ctx.reply(
+      `💰 **Entrada de R$ ${amount.toFixed(2)}**\n` +
+      `🏷️ *${description}*`, 
+      { parse_mode: 'Markdown', ...InlineUndo(data.id) }
+    );
   }
 
-  // --- REGEX 3: NOVA META (nm 5000 Carro) ---
-  const matchNovaMeta = text.match(/^(?:nm|nova meta)\s+(\d+(?:[.,]\d{1,2})?)\s+(.*)/i);
-  if (matchNovaMeta) {
-    const target = parseValue(matchNovaMeta[1]);
-    const title = matchNovaMeta[2];
-    
-    const { error } = await supabase.from('goals').insert({
-      user_id: userId, title, target_amount: target, current_amount: 0
-    });
-    
-    if (error) return ctx.reply("❌ Erro ao criar meta.");
-    return ctx.reply(`🎯 **Meta Criada!**\nObjetivo: ${title}\nAlvo: R$ ${target.toFixed(2)}`);
+  // Se não entendeu nada, mas não é um comando do menu
+  if (!['📉 Registrar Gasto', '📈 Registrar Ganho', '📊 Ver Saldo', '📝 Extrato', '🎯 Metas', '❓ Ajuda'].includes(text)) {
+    ctx.reply(
+      "🤔 Não entendi. Tente algo como:\n\n" +
+      "• `50 almoço` (Gasto)\n" +
+      "• `ganhei 100 pix` (Receita)\n" +
+      "• Ou use o menu abaixo 👇", 
+      { parse_mode: 'Markdown' }
+    );
   }
-
-  // --- REGEX 4: DEPOSITO META (m 100 Carro) ---
-  const matchDeposito = text.match(/^(?:m|meta|guardar)\s+(\d+(?:[.,]\d{1,2})?)\s+(.*)/i);
-  if (matchDeposito) {
-    const amount = parseValue(matchDeposito[1]);
-    const goalName = matchDeposito[2];
-    
-    const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId).ilike('title', `%${goalName}%`).limit(1);
-    
-    if (!goals?.length) return ctx.reply(`⚠️ Meta "${goalName}" não encontrada.`);
-    
-    const meta = goals[0];
-    const novoValor = Number(meta.current_amount) + amount;
-    
-    await supabase.from('goals').update({ current_amount: novoValor }).eq('id', meta.id);
-    const pct = meta.target_amount > 0 ? (novoValor / meta.target_amount * 100).toFixed(1) : 0;
-    
-    return ctx.reply(`🏦 **Guardado!**\nMeta: ${meta.title}\n+ R$ ${amount}\nTotal: R$ ${novoValor} (${pct}%)`);
-  }
-
-  ctx.reply("❓ Não entendi. Use: `g 50 pizza`, `r 100 venda` ou /ajuda.");
 }
 
 module.exports = { handleMessage };

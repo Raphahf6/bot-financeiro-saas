@@ -4,21 +4,28 @@ const http = require('http');
 const cron = require('node-cron');
 const supabase = require('./config/supabase');
 
-// Importação dos Controladores
 const reports = require('./controllers/reports');
 const inputs = require('./controllers/inputs');
+const { MainMenu } = require('./utils/keyboards'); // Importa o menu
 
-// Inicialização
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-console.log('🛡️ Bot Financeiro Modular Iniciado...');
+console.log('🤖 Bot Finan.AI 2.0 Iniciado...');
 
-// --- COMANDOS DO SISTEMA ---
+// --- COMANDO START (Autenticação) ---
 bot.start(async (ctx) => {
   const args = ctx.message.text.split(' ');
-  if (args.length < 2) return ctx.reply(`🔒 **Login:** Envie /start SEU-TOKEN`);
-  const token = args[1].trim();
+  const token = args[1]?.trim();
+
+  if (!token) {
+    return ctx.reply(
+      `👋 **Bem-vindo ao Finan.AI!**\n\nPara conectar sua conta:\n1. Acesse o sistema web\n2. Vá em Configurações > Integrações\n3. Clique em "Conectar Telegram"`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
   const { data: integration } = await supabase.from('user_integrations').select('*').eq('connection_token', token).single();
-  if (!integration) return ctx.reply('❌ Token inválido.');
+  
+  if (!integration) return ctx.reply('❌ Token inválido ou expirado.');
   
   await supabase.from('user_integrations').update({ 
     telegram_chat_id: ctx.chat.id.toString(), 
@@ -26,57 +33,50 @@ bot.start(async (ctx) => {
     connection_token: null 
   }).eq('id', integration.id);
   
-  ctx.reply(`✅ **Sistema Conectado!**\nUse /ajuda para ver os comandos.`);
-});
-
-bot.command('ajuda', (ctx) => {
   ctx.reply(
-    `📚 **Comandos Rápidos**\n\n` +
-    `g [valor] [item] -> Gasto\n` +
-    `r [valor] [item] -> Receita\n` +
-    `nm [valor] [nome] -> Nova Meta\n` +
-    `m [valor] [nome] -> Depositar na Meta\n\n` +
-    `/saldo, /extrato, /contas, /desfazer`
+    `✅ **Conectado com sucesso!**\nAgora você pode usar o menu abaixo para controlar suas finanças.`,
+    MainMenu // Mostra o teclado
   );
 });
 
-// --- REGISTRO DE HANDLERS ---
-bot.command('saldo', reports.handleSaldo);
-bot.command('contas', reports.handleContas);
-bot.command('extrato', reports.handleExtrato);
-bot.command(['desfazer', 'undo'], reports.handleDesfazer);
+// --- MENU HANDLERS ---
+bot.hears('📉 Registrar Gasto', ctx => ctx.reply('Digite o valor e o nome. Ex: `45 pizza`', { parse_mode: 'Markdown' }));
+bot.hears('📈 Registrar Ganho', ctx => ctx.reply('Digite o valor e a origem. Ex: `ganhei 100 pix`', { parse_mode: 'Markdown' }));
+bot.hears('📊 Ver Saldo', reports.handleSaldo);
+bot.hears('📝 Extrato', reports.handleExtrato);
+bot.hears('❓ Ajuda', ctx => ctx.reply(
+  `🤖 **Comandos Rápidos:**\n\n` +
+  `• Digite apenas o valor e o item para gastar: \n   Ex: _30 padaria_\n` +
+  `• Para ganhos, use 'ganhei' ou 'recebi':\n   Ex: _ganhei 500 freela_\n\n` +
+  `Use o menu abaixo para navegar.`,
+  { parse_mode: 'Markdown' }
+));
+bot.hears('🎯 Metas', async (ctx) => {
+    // Busca simples de metas para exibir
+    const userId = await require('./utils/helpers').getUserAuth(ctx);
+    if(!userId) return;
+    const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId);
+    if(!goals.length) return ctx.reply("Você não tem metas cadastradas.");
+    let msg = "🎯 **Suas Metas:**\n\n";
+    goals.forEach(g => {
+        const pct = Math.round((g.current_amount / g.target_amount) * 100);
+        msg += `• ${g.name}: R$ ${g.current_amount} / ${g.target_amount} (${pct}%)\n`;
+    });
+    ctx.reply(msg, { parse_mode: 'Markdown' });
+});
 
-// --- PROCESSAMENTO DE TEXTO (REGEX) ---
+// --- AÇÕES DE BOTÕES (CALLBACKS) ---
+bot.action(/^undo_/, reports.handleCallbackUndo); // Captura cliques no botão "Desfazer"
+
+// --- TEXTO LIVRE ---
 bot.on('text', inputs.handleMessage);
 
-// --- CRON JOBS (Notificação Matinal) ---
-cron.schedule('0 8 * * *', async () => {
-  const { data: ints } = await supabase.from('user_integrations').select('*').not('telegram_chat_id', 'is', null);
-  if (!ints) return;
-  const dia = new Date().getDate();
-  for (const user of ints) {
-    const { data: bills } = await supabase.from('recurring_bills').select('*').eq('user_id', user.user_id).eq('due_day', dia);
-    if (bills?.length) bot.telegram.sendMessage(user.telegram_chat_id, `🔔 **Bom dia!**\nVocê tem ${bills.length} contas vencendo hoje.`);
-  }
-}, { timezone: "America/Sao_Paulo" });
-
-// --- SERVIDOR HTTP (Para o Render não reclamar) ---
+// --- SERVIDOR HTTP (Keep Alive) ---
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => { res.writeHead(200); res.end('OK'); }).listen(PORT, () => console.log('✅ Health Check OK'));
+http.createServer((req, res) => { res.writeHead(200); res.end('Finan.AI Bot Online'); }).listen(PORT);
 
-// --- START ---
-bot.launch({ dropPendingUpdates: true, polling: { retryAfter: 2000, timeout: 30 } })
-  .then(async () => {
-    try {
-      await bot.telegram.setMyCommands([
-        { command: 'ajuda', description: 'Ver comandos' },
-        { command: 'saldo', description: 'Ver resumo' },
-        { command: 'extrato', description: 'Últimos gastos' }
-      ]);
-    } catch(e) {}
-    console.log('✅ Bot Online!');
-  })
-  .catch((err) => { if(err.description?.includes('Conflict')) process.exit(1); console.error(err); });
+// --- INICIALIZAÇÃO ---
+bot.launch({ dropPendingUpdates: true });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
