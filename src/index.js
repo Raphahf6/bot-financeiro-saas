@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { Telegraf, session } = require('telegraf');
+const http = require('http'); // ADICIONADO: Módulo nativo para o server do Render
 const supabase = require('./config/supabase');
 const { MainMenu } = require('./utils/keyboards');
 const authMiddleware = require('./middlewares/auth');
@@ -15,6 +16,24 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // --- SETUP ---
 bot.use(session());
+
+// ==============================================================================
+// 1. SERVIDOR HTTP PARA O RENDER (KEEP-ALIVE / HEALTH CHECK)
+// ==============================================================================
+// O Render exige que uma porta seja aberta. Esse servidor roda em paralelo ao bot.
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Finan.AI Telegram Bot está online!');
+});
+
+server.listen(PORT, () => {
+    console.log(`✅ Servidor de Health Check rodando na porta ${PORT}`);
+});
+
+// ==============================================================================
+// 2. LÓGICA DO BOT (TELEGRAF)
+// ==============================================================================
 
 // --- COMANDO DE CONEXÃO (Start com Token) ---
 bot.start(async (ctx) => {
@@ -71,22 +90,12 @@ bot.launch({ dropPendingUpdates: true })
   .then(() => console.log('🚀 Finan.AI Bot Profissional Online!'))
   .catch((err) => console.error('Erro ao iniciar bot:', err));
 
-// Graceful Stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-const http = require('http'); // Importa o módulo http nativo
-
-// Cria um servidor simples que retorna 200 OK
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot está online e ativo no Render!');
+// Graceful Stop (Encerra tanto o bot quanto o servidor http se necessário)
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    server.close();
 });
-
-// O Render define a porta automaticamente na variável de ambiente PORT
-// Se não houver PORT definida (rodando localmente), usa a 3000
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-    console.log(`✅ Servidor HTTP de verificação rodando na porta ${PORT}`);
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    server.close();
 });
