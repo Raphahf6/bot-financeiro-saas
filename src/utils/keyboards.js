@@ -1,9 +1,13 @@
 const { Markup } = require('telegraf');
 
-const mainKeyboard = Markup.keyboard([
-    ['📉 Lançar Gasto', '📈 Lançar Ganho'],
-    ['💰 Saldo', '📄 Extrato'],
-    ['🎯 Metas', '❓ Ajuda']
+const MainMenu = Markup.keyboard([
+    ['📉 Registrar Gasto', '📈 Registrar Ganho'],
+    ['📊 Ver Saldo', '📝 Extrato'],
+    ['❓ Ajuda']
 ]).resize();
 
-module.exports = { mainKeyboard };
+const InlineUndo = (transactionId) => Markup.inlineKeyboard([
+    Markup.button.callback('↩️ Desfazer', `undo_${transactionId}`)
+]);
+
+module.exports = { MainMenu, InlineUndo };

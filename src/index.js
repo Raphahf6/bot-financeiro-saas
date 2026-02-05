@@ -1,84 +1,70 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const express = require('express');
+const supabase = require('./config/supabase');
+const inputs = require('./controllers/inputs');
+const reports = require('./controllers/reports');
+const { MainMenu } = require('./utils/keyboards');
 
-// Imports dos seus módulos
-const { MESSAGES } = require('./config/constants');
-const { mainKeyboard } = require('./utils/keyboards');
-const authMiddleware = require('./middlewares/auth');
-const transactionController = require('./controllers/transaction');
-const reportController = require('./controllers/report');
-const schedulerService = require('./services/scheduler');
-
-// --- 1. SERVER EXPRESS (CRÍTICO PARA O RENDER) ---
+// --- SERVER EXPRESS (Fix Render) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('Bot Finan.AI 2.0 Online 🚀'));
+app.listen(PORT, () => console.log(`Server rodando na porta ${PORT}`));
 
-app.get('/', (req, res) => res.send('🤖 Bot Finan.AI está ONLINE!'));
-app.listen(PORT, () => console.log(`[SERVER] Rodando na porta ${PORT}`));
-
-// --- 2. CONFIGURAÇÃO DO BOT ---
+// --- BOT SETUP ---
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+console.log('🤖 Bot Finan.AI Iniciado...');
 
-// Middleware
-bot.use(authMiddleware);
+// 1. Comando START (Onde a mágica da conexão acontece)
+bot.start(async (ctx) => {
+    const args = ctx.message.text.split(' ');
+    const token = args[1]?.trim();
 
-// Menu Nativo (Botão Azul)
-bot.telegram.setMyCommands([
-    { command: 'start', description: 'Reiniciar' },
-    { command: 'menu', description: 'Abrir ações' },
-    { command: 'gasto', description: 'Lançar saída' },
-    { command: 'ganho', description: 'Lançar entrada' },
-    { command: 'saldo', description: 'Ver saldo' },
-    { command: 'extrato', description: 'Histórico' }
-]);
+    // Se não tiver token, ensina como pegar
+    if (!token) {
+        return ctx.reply(
+            `👋 *Bem-vindo ao Finan.AI!*\n\nPara conectar sua conta:\n1. Acesse o sistema web\n2. Vá em Configurações > Integrações\n3. Clique em "Conectar Telegram" e copie o código.`,
+            { parse_mode: 'Markdown' }
+        );
+    }
 
-// --- 3. ROTAS E COMANDOS ---
+    // Verifica o token no banco
+    const { data: integration } = await supabase
+        .from('user_integrations')
+        .select('*')
+        .eq('connection_token', token)
+        .single();
 
-// Início
-bot.start((ctx) => {
-    ctx.reply(MESSAGES.WELCOME(ctx.from.first_name), mainKeyboard);
+    if (!integration) return ctx.reply('❌ Token inválido ou expirado.');
+
+    // Salva o ID do Telegram na tabela de integração
+    await supabase
+        .from('user_integrations')
+        .update({
+            telegram_chat_id: ctx.chat.id.toString(),
+            telegram_username: ctx.from.username,
+            connection_token: null // Queima o token para segurança
+        })
+        .eq('id', integration.id);
+
+    ctx.reply(`✅ *Sistema Conectado!*\nAgora você pode lançar gastos e ganhos.`, { parse_mode: 'Markdown', ...MainMenu });
 });
 
-// Menu
-bot.command('menu', (ctx) => ctx.reply('Painel:', mainKeyboard));
-bot.hears(['Menu', 'menu'], (ctx) => ctx.reply('Painel:', mainKeyboard));
+// 2. Comandos do Menu
+bot.hears(['📉 Registrar Gasto', 'Gasto'], (ctx) => ctx.reply('Digite: `g 50 pizza`', { parse_mode: 'Markdown' }));
+bot.hears(['📈 Registrar Ganho', 'Ganho'], (ctx) => ctx.reply('Digite: `r 1000 salario`', { parse_mode: 'Markdown' }));
+bot.hears(['📊 Ver Saldo', 'Saldo'], reports.handleSaldo);
+bot.hears(['📝 Extrato', 'Extrato'], reports.handleExtrato);
+bot.hears(['❓ Ajuda'], (ctx) => ctx.reply('Comandos rápidos:\n`g 15 uber` (Gasto)\n`r 50 venda` (Receita)', { parse_mode: 'Markdown' }));
 
-// Ajuda
-bot.hears(['❓ Ajuda', 'ajuda', '/ajuda'], (ctx) => ctx.reply(MESSAGES.HELP, { parse_mode: 'Markdown', ...mainKeyboard }));
+// 3. Processador de Mensagens (Inteligência)
+bot.on('text', inputs.handleMessage);
 
-// --- Transações ---
-// Botões (Instrução)
-bot.hears('📉 Lançar Gasto', (ctx) => ctx.reply('Digite: `/gasto VALOR DESCRIÇÃO`\nEx: `/gasto 30.00 Padaria`', { parse_mode: 'Markdown' }));
-bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`\nEx: `/ganho 100.00 Venda`', { parse_mode: 'Markdown' }));
+// 4. Botão de Desfazer
+bot.on('callback_query', reports.handleCallbackUndo);
 
-// Comandos Reais (Execução)
-bot.command('gasto', transactionController.addExpense);
-bot.command('ganho', transactionController.addIncome);
-
-// --- Relatórios ---
-bot.hears('💰 Saldo', reportController.getBalance);
-bot.command('saldo', reportController.getBalance);
-
-bot.hears('📄 Extrato', reportController.getStatement);
-bot.command('extrato', reportController.getStatement);
-
-bot.hears('🎯 Metas', reportController.getGoals);
-bot.command('metas', reportController.getGoals);
-
-// --- Fallback (Mensagem não entendida) ---
-bot.on('text', (ctx) => {
-    // Ignora se for um comando que não foi pego antes (evita duplicidade com /commands)
-    if (ctx.message.text.startsWith('/')) return;
-    
-    ctx.reply('⚠️ Opção não reconhecida.\nPor favor, utilize o menu abaixo:', mainKeyboard);
-});
-
-// --- INICIALIZAÇÃO ---
-schedulerService.initScheduler();
 bot.launch();
-
-console.log('[BOT] Finan.AI iniciado com sucesso!');
 
 // Graceful Stop
 process.once('SIGINT', () => bot.stop('SIGINT'));

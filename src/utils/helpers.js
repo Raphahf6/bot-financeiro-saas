@@ -1,18 +1,23 @@
-const formatCurrency = (value) => {
-    return new Intl.NumberFormat('pt-BR', {
-        style: 'currency',
-        currency: 'BRL'
-    }).format(value);
-};
+const supabase = require('../config/supabase');
 
-const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-};
+// Função Mágica: Descobre o UUID do usuário pelo Telegram ID
+async function getUserAuth(ctx) {
+    const chatId = ctx.chat?.id?.toString();
+    if (!chatId) return null;
 
-module.exports = { formatCurrency, formatDate };
+    // Busca na tabela de integrações quem é o dono desse Telegram
+    const { data: integration } = await supabase
+        .from('user_integrations')
+        .select('user_id')
+        .eq('telegram_chat_id', chatId)
+        .single();
+
+    return integration?.user_id || null;
+}
+
+function parseValue(valStr) {
+    if (!valStr) return 0;
+    return parseFloat(valStr.replace(',', '.'));
+}
+
+module.exports = { getUserAuth, parseValue };
