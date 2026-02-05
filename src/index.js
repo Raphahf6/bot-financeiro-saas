@@ -48,6 +48,12 @@ bot.action(/set_cat:(.+)/, transactionController.handleCategoryCallback);
 bot.hears(['💰 Saldo', '/saldo', '/resumo'], reportController.getDashboard);
 bot.hears(['📄 Extrato', '/extrato'], reportController.getStatement);
 
+// Contas Recorrentes
+bot.hears(['📅 Contas Fixas', '/add-conta'], recurringController.listRecurring);
+
+// O comando agora espera 3 argumentos
+bot.command('add-conta', recurringController.addRecurring); 
+bot.hears('add-conta', (ctx) => ctx.reply('Use: `/add-conta DIA VALOR NOME`\nEx: `/add-conta 10 100 Internet`', { parse_mode: 'Markdown' }));
 // Metas (Novo Módulo)
 bot.hears(['🎯 Metas', '/metas'], goalController.listGoals);
 bot.command('nova_meta', goalController.createGoal); // /nova_meta Carro 50000
