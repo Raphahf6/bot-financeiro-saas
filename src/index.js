@@ -1,114 +1,74 @@
-require('dotenv').config(); // Carrega variáveis de ambiente
+require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const express = require('express');
-const http = require('http'); // <--- O Módulo que o Render prefere
+const http = require('http');
 
-// Imports dos seus Módulos (Controllers e Utils)
+// Módulos
 const authController = require('./controllers/auth');
 const transactionController = require('./controllers/transaction');
 const reportController = require('./controllers/report');
+const goalController = require('./controllers/goals'); // <--- NOVO
+const scheduler = require('./services/scheduler');     // <--- NOVO
 const { MainMenu } = require('./utils/keyboards');
 
-// ----------------------------------------------------------------------
-// 1. CONFIGURAÇÃO DO SERVIDOR HTTP (FIX RENDER)
-// ----------------------------------------------------------------------
+// --- 1. SERVER HTTP (RENDER) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Rota Raiz: O Render acessa isso para saber se está "Live"
-app.get('/', (req, res) => {
-    res.status(200).send('Bot Finan.AI está Online e Rodando! 🚀');
-});
-
-// Rota Health Check (Padrão de infraestrutura)
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok' });
-});
-
-// Criação explicita do servidor HTTP (solução que funcionou pra você)
+app.get('/', (req, res) => res.send('Bot Finan.AI Consultor 3.0 Online 🚀'));
 const server = http.createServer(app);
+server.listen(PORT, '0.0.0.0', () => console.log(`✅ Server na porta ${PORT}`));
 
-// OUVINDO NA PORTA: O '0.0.0.0' é essencial para o Render
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Servidor HTTP rodando na porta ${PORT}`);
-});
-
-// ----------------------------------------------------------------------
-// 2. CONFIGURAÇÃO DO BOT TELEGRAM
-// ----------------------------------------------------------------------
-if (!process.env.TELEGRAM_BOT_TOKEN) {
-    console.error("❌ Erro fatal: TELEGRAM_BOT_TOKEN não definido no .env");
-    process.exit(1);
-}
-
+// --- 2. BOT ---
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Atualiza o Menu Azul (Lista de Comandos)
+// Atualiza Comandos
 bot.telegram.setMyCommands([
-    { command: 'start', description: 'Conectar Conta' },
-    { command: 'menu', description: 'Abrir Menu Principal' },
+    { command: 'menu', description: 'Painel Principal' },
+    { command: 'resumo', description: 'Dashboard do Mês' },
     { command: 'gasto', description: 'Lançar Despesa' },
     { command: 'ganho', description: 'Lançar Receita' },
-    { command: 'saldo', description: 'Ver Saldo Atual' },
-    { command: 'extrato', description: 'Ver Histórico' }
-]).then(() => console.log('✅ Menu nativo do Telegram atualizado.'));
+    { command: 'metas', description: 'Ver Metas' },
+    { command: 'extrato', description: 'Histórico' }
+]);
 
-// ----------------------------------------------------------------------
-// 3. ROTAS E AÇÕES (Lógica do Bot)
-// ----------------------------------------------------------------------
+// --- 3. ROTAS ---
 
-// --- Autenticação e Início ---
+// Início & Auth
 bot.start(authController.handleStart);
+bot.hears(['Menu', '/menu'], (ctx) => ctx.reply('Painel Consultor:', MainMenu));
 
-// --- Navegação Básica ---
-bot.hears(['Menu', '/menu'], (ctx) => ctx.reply('Painel Principal:', MainMenu));
-bot.hears(['❓ Ajuda'], (ctx) => ctx.reply('Use os botões abaixo ou digite o comando:\n/gasto VALOR DESCRIÇÃO', MainMenu));
-
-// --- Transações (Gasto) ---
-bot.hears('📉 Lançar Gasto', (ctx) => ctx.reply('Digite: `/gasto VALOR DESCRIÇÃO`\nEx: `/gasto 25.00 Uber`', { parse_mode: 'Markdown' }));
+// Transações
+bot.hears('📉 Lançar Gasto', (ctx) => ctx.reply('Digite: `/gasto VALOR DESCRIÇÃO`', { parse_mode: 'Markdown' }));
 bot.command('gasto', transactionController.addExpense);
-
-// --- Transações (Ganho) ---
-bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`\nEx: `/ganho 1000 Salário`', { parse_mode: 'Markdown' }));
+bot.hears('📈 Lançar Ganho', (ctx) => ctx.reply('Digite: `/ganho VALOR DESCRIÇÃO`', { parse_mode: 'Markdown' }));
 bot.command('ganho', transactionController.addIncome);
-
-// --- INTERATIVIDADE: Botões de Categoria (Ação de Clique) ---
-// Escuta quando o usuário clica em um botão de categoria (ex: "set_cat:123:45")
 bot.action(/set_cat:(.+)/, transactionController.handleCategoryCallback);
 
-// --- Relatórios Financeiros ---
-bot.hears(['💰 Saldo', '/saldo'], reportController.getBalance);
-bot.command('saldo', reportController.getBalance);
-
+// Dashboard & Extrato (Substitui Saldo simples pelo Dashboard)
+bot.hears(['💰 Saldo', '/saldo', '/resumo'], reportController.getDashboard);
 bot.hears(['📄 Extrato', '/extrato'], reportController.getStatement);
-bot.command('extrato', reportController.getStatement);
 
-bot.hears(['🎯 Metas', '/metas'], reportController.getGoals);
+// Metas (Novo Módulo)
+bot.hears(['🎯 Metas', '/metas'], goalController.listGoals);
+bot.command('nova_meta', goalController.createGoal); // /nova_meta Carro 50000
+bot.command('investir', goalController.depositGoal); // /investir 1 500
 
-// --- Fallback (Resposta Padrão) ---
+// Fallback
 bot.on('text', (ctx) => {
-    // Ignora comandos iniciados com / para evitar conflito
     if (ctx.message.text.startsWith('/')) return;
-    
-    ctx.reply('⚠️ Opção não reconhecida.\nPor favor, utilize os botões do menu:', MainMenu);
+    ctx.reply('Opção não reconhecida. Use o menu:', MainMenu);
 });
 
-// --- Tratamento de Erros Globais ---
-bot.catch((err, ctx) => {
-    console.error(`❌ Erro não tratado no update ${ctx.updateType}:`, err);
-    try {
-        ctx.reply("⚠️ Ocorreu um erro interno. Tente novamente em instantes.");
-    } catch (e) {
-        // Ignora erro de envio caso usuário tenha bloqueado
-    }
-});
+// Tratamento de Erros
+bot.catch((err) => console.error('Erro no bot:', err));
 
-// ----------------------------------------------------------------------
-// 4. INICIALIZAÇÃO
-// ----------------------------------------------------------------------
+// --- 4. INICIALIZAÇÃO ---
+
+// Inicia o "Despertador" (Cron Job) passando o bot para ele poder enviar msgs
+scheduler.initScheduler(bot); 
+
 bot.launch();
-console.log('🤖 Bot Finan.AI iniciado com sucesso!');
+console.log('🤖 Bot Finan.AI 3.0 (Consultor) Ativado!');
 
-// Graceful Stop (Para reiniciar sem travar a porta)
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

@@ -1,51 +1,52 @@
 const cron = require('node-cron');
 const supabase = require('../config/supabase');
+const { formatCurrency } = require('../utils/helpers');
 
+// Inicia o agendador
 const initScheduler = (bot) => {
-  console.log('⏰ Agendador de notificações iniciado (08:00 AM - SP)...');
+    console.log('⏰ Agendador de tarefas iniciado (Cron Job).');
 
-  // Roda todos os dias às 08:00 da manhã (Horário de SP)
-  cron.schedule('0 8 * * *', async () => {
-    const today = new Date().getDate();
-    
-    // 1. Busca todos usuários que têm o bot conectado
-    const { data: integrations } = await supabase
-      .from('user_integrations')
-      .select('user_id, telegram_chat_id')
-      .not('telegram_chat_id', 'is', null);
+    // Roda todo dia às 08:00 da manhã
+    // Formato Cron: Minuto Hora Dia Mês DiaSemana
+    cron.schedule('0 8 * * *', async () => {
+        console.log('[CRON] Verificando contas a vencer hoje...');
+        await checkDailyBills(bot);
+    }, {
+        scheduled: true,
+        timezone: "America/Sao_Paulo"
+    });
+};
 
-    if (!integrations) return;
+// Lógica de verificação
+const checkDailyBills = async (bot) => {
+    const hoje = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
-    // 2. Para cada usuário, verifica se tem conta vencendo hoje
-    for (const integration of integrations) {
-      const { data: bills } = await supabase
-        .from('recurring_bills')
-        .select('*')
-        .eq('user_id', integration.user_id)
-        .eq('due_day', today);
+    // 1. Busca todas as transações do TIPO 'expense' agendadas para HOJE
+    // Assumindo que você usa a coluna 'date' para a data de vencimento/pagamento
+    const { data: bills, error } = await supabase
+        .from('transactions')
+        .select(`
+            amount, description, user_id,
+            user_integrations!inner(telegram_chat_id) 
+        `)
+        .eq('date', hoje)
+        .eq('type', 'expense'); 
+        // Se tiver coluna 'status' (pago/pendente), adicione .eq('status', 'pending')
 
-      if (bills && bills.length > 0) {
-        let msg = `🔔 **Bom dia! Hoje vencem ${bills.length} contas:**\n\n`;
-        let total = 0;
+    if (error || !bills) return console.error('Erro no Cron:', error);
+
+    // 2. Envia mensagem para cada usuário
+    bills.forEach(bill => {
+        const chatId = bill.user_integrations?.telegram_chat_id;
         
-        bills.forEach(bill => {
-          msg += `• ${bill.description}: R$ ${Number(bill.amount).toFixed(2)}\n`;
-          total += Number(bill.amount);
-        });
-        
-        msg += `\n💰 **Total: R$ ${total.toFixed(2)}**\n`;
-        msg += `_Dica: Se já pagou, lance o gasto respondendo esta mensagem!_`;
-
-        try {
-          await bot.telegram.sendMessage(integration.telegram_chat_id, msg, { parse_mode: 'Markdown' });
-        } catch (error) {
-          console.error(`Erro ao enviar msg para ${integration.telegram_chat_id}`, error);
+        if (chatId) {
+            bot.telegram.sendMessage(
+                chatId,
+                `⚠️ *Lembrete do Dia*\n\nVocê tem uma conta vencendo hoje!\n\n📝 *${bill.description}*\n💰 ${formatCurrency(Math.abs(bill.amount))}`,
+                { parse_mode: 'Markdown' }
+            ).catch(err => console.error(`Erro ao enviar alerta para ${chatId}`, err));
         }
-      }
-    }
-  }, {
-    timezone: "America/Sao_Paulo"
-  });
+    });
 };
 
 module.exports = { initScheduler };

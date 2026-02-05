@@ -1,57 +1,68 @@
 const supabase = require('../config/supabase');
 const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/helpers');
-const { MainMenu, LinkToWeb, DASHBOARD_URL } = require('../utils/keyboards');
+const { MainMenu, LinkToWeb } = require('../utils/keyboards');
 
-// SALDO
-const getBalance = async (ctx) => {
+// 1. DASHBOARD COMPLETO (Novo)
+const getDashboard = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
-    if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
+    if (!userId) return ctx.reply('🔒 Conecte-se com /start.');
 
-    const { data, error } = await supabase
+    const hoje = new Date();
+    const primeiroDiaMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString();
+
+    // Busca transações do mês atual
+    const { data: transactions } = await supabase
         .from('transactions')
-        .select('amount')
-        .eq('user_id', userId);
-
-    if (error) return ctx.reply('Erro ao calcular saldo.');
-
-    const total = data.reduce((acc, cur) => acc + cur.amount, 0);
-    
-    ctx.reply(
-        `💵 *Saldo Atual*\n\n${formatCurrency(total)}\n\n_Visualize gráficos detalhados no site._`, 
-        { parse_mode: 'Markdown', ...LinkToWeb }
-    );
-};
-
-// EXTRATO
-const getStatement = async (ctx) => {
-    const userId = await getAuthenticatedUser(ctx.chat.id);
-    if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
-
-    const { data } = await supabase
-        .from('transactions')
-        .select('*')
+        .select('amount, type')
         .eq('user_id', userId)
-        .order('date', { ascending: false }) // Verifique se sua coluna é 'date' ou 'created_at'
-        .limit(5);
+        .gte('date', primeiroDiaMes); // Ajuste 'date' para 'created_at' se necessário
 
-    if (!data || data.length === 0) return ctx.reply('📭 Nenhuma movimentação recente.', MainMenu);
+    // Cálculos
+    let receitas = 0;
+    let despesas = 0;
 
-    let msg = '📄 *Últimas Movimentações:*\n\n';
-    data.forEach(t => {
-        const icon = t.amount < 0 ? '🔻' : '🟢';
-        msg += `${icon} *${formatCurrency(Math.abs(t.amount))}* - ${t.description}\n📅 ${formatDate(t.date || t.created_at)}\n\n`;
+    transactions.forEach(t => {
+        if (t.type === 'income') receitas += Number(t.amount);
+        else despesas += Math.abs(Number(t.amount));
     });
+
+    const saldo = receitas - despesas;
+    const status = saldo >= 0 ? '🔵 Positivo' : '🔴 Negativo';
+
+    // Busca saldo total acumulado (não só do mês)
+    const { data: totalData } = await supabase.from('transactions').select('amount').eq('user_id', userId);
+    const saldoTotal = totalData.reduce((acc, curr) => acc + Number(curr.amount), 0);
+
+    const msg = 
+        `📊 *Resumo Financeiro (Mês Atual)*\n\n` +
+        `📈 Receitas: ${formatCurrency(receitas)}\n` +
+        `📉 Despesas: ${formatCurrency(despesas)}\n` +
+        `-----------------------------\n` +
+        `⚖️ Balanço Mês: ${formatCurrency(saldo)}\n` +
+        `🏦 *Saldo Total Acumulado: ${formatCurrency(saldoTotal)}*\n\n` +
+        `Status: ${status}`;
 
     ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
 };
 
-// METAS (Simulação com Link)
-const getGoals = async (ctx) => {
-    // Como metas geralmente são complexas, melhor mandar ver no site
-    ctx.reply(
-        `🎯 *Suas Metas*\n\nPara gerenciar e visualizar o progresso detalhado das suas metas, acesse o painel completo:\n\n🔗 ${DASHBOARD_URL}`,
-        { parse_mode: 'Markdown', ...MainMenu }
-    );
+// 2. EXTRATO (Mantido)
+const getStatement = async (ctx) => {
+    const userId = await getAuthenticatedUser(ctx.chat.id);
+    const { data } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: false })
+        .limit(5);
+
+    if (!data || data.length === 0) return ctx.reply('📭 Sem movimentações.');
+
+    let msg = '📄 *Últimas Movimentações:*\n\n';
+    data.forEach(t => {
+        const icon = t.type === 'expense' ? '🔻' : '🟢';
+        msg += `${icon} *${formatCurrency(Math.abs(t.amount))}* - ${t.description}\n📅 ${formatDate(t.date)}\n\n`;
+    });
+    ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
 };
 
-module.exports = { getBalance, getStatement, getGoals };
+module.exports = { getDashboard, getStatement };
