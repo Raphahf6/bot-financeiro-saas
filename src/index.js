@@ -101,15 +101,20 @@ console.log('🔄 Iniciando conexão com o Telegram...');
 
 // Removemos await do launch para não travar o script, usamos .then()
 bot.launch({
-    dropPendingUpdates: false // MUDEI PARA FALSE: Para você não perder mensagens enviadas enquanto reiniciava
+    dropPendingUpdates: true
 }).then(() => {
-    console.log('🚀 BOT INICIADO COM SUCESSO! (Polling ativo)');
-    console.log('👉 Vá no Telegram e mande "/start" para testar.');
+    console.log('🚀 BOT INICIADO COM SUCESSO!');
+    console.log('👉 Vá no Telegram e mande "/start"');
 }).catch((err) => {
+    console.error('❌ Erro ao iniciar:', err);
+    
+    // Se for erro 409 (Conflito), tenta de novo em 5 segundos
     if (err.response && err.response.error_code === 409) {
-        console.warn('⚠️ Conflito 409 detectado. O Render vai reiniciar sozinho em breve.');
-    } else {
-        console.error('❌ Erro fatal no launch:', err);
+        console.log('🔄 Conflito detectado. Tentando reconectar em 5 segundos...');
+        setTimeout(() => {
+            // Reinicia o processo para o Render tentar de novo limpo
+            process.exit(1); 
+        }, 5000);
     }
 });
 
