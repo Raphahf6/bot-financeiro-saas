@@ -3,14 +3,14 @@ const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/h
 const { MainMenu, LinkToWeb } = require('../utils/keyboards');
 
 // Função visual: Barra de Progresso
-const drawBudgetBar = (spent, budget) => {
-    // Garante que estamos lidando com números positivos para o desenho
+const drawBudgetBar = (spent, limit) => {
+    // Garante positivos
     const spentPos = Math.abs(spent);
-    const budgetPos = Math.abs(budget);
+    const limitPos = Math.abs(limit);
 
-    if (!budgetPos || budgetPos <= 0) return ''; 
+    if (!limitPos || limitPos <= 0) return ''; 
     
-    const percentage = Math.min((spentPos / budgetPos) * 100, 100);
+    const percentage = Math.min((spentPos / limitPos) * 100, 100);
     const filled = Math.round(percentage / 10);
     const empty = 10 - filled;
     
@@ -33,6 +33,8 @@ const getDashboard = async (ctx) => {
     const dataInicioIso = primeiroDia.toISOString();
 
     try {
+        // --- 1. BUSCAR DADOS ---
+
         // A. Perfil (Salário)
         const { data: profile } = await supabase
             .from('profiles')
@@ -47,7 +49,6 @@ const getDashboard = async (ctx) => {
             .select('amount')
             .eq('user_id', userId)
             .eq('type', 'expense');
-        // Soma garantindo positivo
         const totalFixas = recurring?.reduce((acc, curr) => acc + Math.abs(parseFloat(curr.amount)), 0) || 0;
 
         // C. Transações do Mês
@@ -57,61 +58,71 @@ const getDashboard = async (ctx) => {
             .eq('user_id', userId)
             .gte('created_at', dataInicioIso);
 
-        // D. Categorias (Busca ID, Nome e Orçamento)
+        // D. Categorias (Nomes)
         const { data: categories } = await supabase
             .from('categories')
-            .select('id, name, budget')
+            .select('id, name') // Não pegamos budget aqui
             .or(`user_id.eq.${userId},user_id.is.null`);
 
-        // --- PROCESSAMENTO ---
+        // E. ORÇAMENTOS (Tabela Separada 'budgets')
+        // Aqui está a correção: buscamos o limite na tabela certa
+        const { data: budgetsData } = await supabase
+            .from('budgets')
+            .select('category_id, limit_amount')
+            .eq('user_id', userId);
+
+        // --- 2. MAPEAMENTO DE DADOS ---
+
+        // Mapa de Orçamentos: { ID_CATEGORIA: VALOR_LIMITE }
+        const budgetMap = {};
+        if (budgetsData) {
+            budgetsData.forEach(b => {
+                budgetMap[b.category_id] = parseFloat(b.limit_amount);
+            });
+        }
+
+        // Mapa de Gastos por Categoria
         let ganhosExtras = 0;
         let gastosVariaveis = 0;
+        const gastosPorCategoria = {};
         
-        // Mapa para somar gastos por ID de categoria
-        const gastosPorCategoria = {}; 
-        
-        // Mapa auxiliar para saber o nome da categoria pelo ID
-        const catDetails = {}; 
+        // Inicializa contadores para categorias conhecidas
+        const catNames = {};
         categories?.forEach(c => {
-            catDetails[c.id] = c;
-            // Inicializa o acumulador com 0 para todas as categorias existentes
+            catNames[c.id] = c.name;
             gastosPorCategoria[c.id] = 0;
         });
-        // Inicializa acumulador para sem categoria
         gastosPorCategoria['sem_categoria'] = 0;
+        gastosPorCategoria['outra'] = 0;
 
+        // Processa Transações
         transactions?.forEach(t => {
-            const valOriginal = parseFloat(t.amount);
-            const valAbsoluto = Math.abs(valOriginal); // <--- O SEGREDO: Sempre positivo para somas
+            const valAbsoluto = Math.abs(parseFloat(t.amount));
 
             if (t.type === 'income') {
                 ganhosExtras += valAbsoluto;
             } else {
                 gastosVariaveis += valAbsoluto;
                 
-                // Agrupamento
                 const catId = t.category_id;
                 
                 if (!catId) {
                     gastosPorCategoria['sem_categoria'] += valAbsoluto;
-                } else if (catDetails[catId]) {
-                    // Categoria existe na lista oficial
+                } else if (catNames[catId]) {
                     gastosPorCategoria[catId] += valAbsoluto;
                 } else {
-                    // Tem ID mas não está na lista (deletada ou erro de permissão)
-                    if (!gastosPorCategoria['outra']) gastosPorCategoria['outra'] = 0;
                     gastosPorCategoria['outra'] += valAbsoluto;
                 }
             }
         });
 
-        // Totais
+        // Totais Gerais
         const receitaTotal = salarioBase + ganhosExtras;
         const despesaTotal = totalFixas + gastosVariaveis; 
         const saldoPrevisto = receitaTotal - despesaTotal;
         const status = saldoPrevisto >= 0 ? '🔵 Azul' : '🔴 Vermelho';
 
-        // --- VISUALIZAÇÃO ---
+        // --- 3. VISUALIZAÇÃO ---
         let msg = `📊 *Resumo Financeiro Mensal*\n\n`;
         msg += `💵 *Receitas:* ${formatCurrency(receitaTotal)}\n`;
         msg += `   ├ Base: ${formatCurrency(salarioBase)}\n`;
@@ -127,12 +138,13 @@ const getDashboard = async (ctx) => {
 
         let algumItem = false;
 
-        // 1. Itera sobre as categorias cadastradas
+        // Itera sobre todas as categorias disponíveis
         categories?.forEach(cat => {
-            const gasto = gastosPorCategoria[cat.id] || 0; // Já está positivo
-            const limite = parseFloat(cat.budget || 0);
+            const gasto = gastosPorCategoria[cat.id] || 0;
+            // Pega o limite do MAPA que criamos via tabela 'budgets'
+            const limite = budgetMap[cat.id] || 0; 
 
-            // Só mostra se tiver Orçamento definido OU se gastou algo nela
+            // Mostra se tiver Limite Definido OU Gasto realizado
             if (limite > 0 || gasto > 0) {
                 algumItem = true;
                 msg += `\n🏷️ *${cat.name}*`;
@@ -143,7 +155,9 @@ const getDashboard = async (ctx) => {
                     msg += `\n   ${formatCurrency(gasto)} / ${formatCurrency(limite)}`;
                     
                     if (restante < 0) {
-                        msg += ` (🚨 Estourou ${formatCurrency(Math.abs(restante))})`;
+                        msg += ` (🚨 ${formatCurrency(restante)})`; // Valor negativo já tem sinal
+                    } else {
+                        msg += ` (✅ Restam ${formatCurrency(restante)})`;
                     }
                 } else {
                     msg += `\n   ${formatCurrency(gasto)} (Sem limite)`;
@@ -151,27 +165,26 @@ const getDashboard = async (ctx) => {
             }
         });
 
-        // 2. Gastos Sem Categoria
+        // Gastos avulsos
         if (gastosPorCategoria['sem_categoria'] > 0) {
             algumItem = true;
             msg += `\n\n⚠️ *Sem Categoria:* ${formatCurrency(gastosPorCategoria['sem_categoria'])}`;
         }
-
-        // 3. Gastos em Categorias Desconhecidas (ID que não bateu)
+        
         if (gastosPorCategoria['outra'] > 0) {
             algumItem = true;
-            msg += `\n\n❓ *Categorias Deletadas/Outras:* ${formatCurrency(gastosPorCategoria['outra'])}`;
+            msg += `\n\n❓ *Outras:* ${formatCurrency(gastosPorCategoria['outra'])}`;
         }
 
         if (!algumItem) {
-            msg += `_Nenhuma movimentação neste mês._\n`;
+            msg += `_Nenhuma movimentação ou orçamento ativo._\n`;
         }
 
         ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
 
     } catch (err) {
         console.error('Erro Dashboard:', err);
-        ctx.reply('⚠️ Erro ao calcular.', MainMenu);
+        ctx.reply('⚠️ Erro ao calcular dashboard.', MainMenu);
     }
 };
 
@@ -180,7 +193,7 @@ const getStatement = async (ctx) => {
     const userId = await getAuthenticatedUser(ctx.chat.id);
     const { data } = await supabase.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(10);
 
-    if (!data || data.length === 0) return ctx.reply('📭 Vazio.', MainMenu);
+    if (!data || data.length === 0) return ctx.reply('📭 Extrato vazio.', MainMenu);
 
     let msg = '📄 *Extrato Recente:*\n\n';
     data.forEach(t => {
