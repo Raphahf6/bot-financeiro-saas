@@ -3,6 +3,7 @@ const { Telegraf, Markup } = require('telegraf');
 const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const cron = require('node-cron');
+const http = require('http'); // <--- IMPORTANTE: Módulo nativo para criar o servidor fake
 
 // --- 1. VALIDAÇÃO ---
 const REQUIRED_VARS = ['TELEGRAM_BOT_TOKEN', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'GEMINI_API_KEY'];
@@ -17,13 +18,13 @@ REQUIRED_VARS.forEach(key => {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-console.log('🚀 Bot Financeiro (Módulo Metas Ativado) Iniciado...');
+console.log('🚀 Bot Financeiro (Versão Render Fix) Iniciado...');
 
 // --- 3. MENU DE AJUDA ---
 const ajudaMenu = {
-  text: `🎓 **Central do Coach Financeiro**\n\nAgora posso gerenciar suas metas também!\n\nSelecione:`,
+  text: `🎓 **Central do Coach Financeiro**\n\nEstou online e estável!\n\nSelecione:`,
   buttons: Markup.inlineKeyboard([
     [Markup.button.callback('🎯 Criar/Gerir Metas', 'help_metas')],
     [Markup.button.callback('💸 Lançar Gasto', 'help_gastos')],
@@ -36,76 +37,39 @@ const ajudaMenu = {
 // --- 4. ROTEADOR ---
 async function rotearIntencao(texto) {
   const t = texto.toLowerCase();
-  
-  // Regex Específico para Metas (Para economizar IA se for óbvio, mas vamos deixar a IA lidar com a complexidade de extração)
-  if (t.match(/(nova meta|criar meta|definir meta)/)) return { intent: 'USE_AI' }; // IA extrai melhor o nome e valor
-  if (t.match(/(guardar|investir|depositar|pôr|colocar).*meta/)) return { intent: 'USE_AI' };
-
+  if (t.match(/(nova meta|criar meta|definir meta)/)) return { intent: 'CREATE_GOAL' };
+  if (t.match(/(guardar|investir|depositar|pôr|colocar).*meta/)) return { intent: 'ADD_TO_GOAL' };
   if (t.match(/(saldo|resumo|quanto.*gastei|gastos.*mes|fatura|balan[çc]o|saude|saúde)/)) return { intent: 'CHECK_BALANCE' };
   if (t.match(/(conta|boleto|pagar|vencendo|vence|hoje|amanh[ãa])/)) return { intent: 'CHECK_BILLS' };
   if (t.match(/(apaga|exclui|deleta|desfaz|remover|tira).*ultim[oa]/)) return { intent: 'DELETE_LAST' };
-  if (t.match(/^(oi|ol[áa]|bom dia|boa tarde|boa noite|eai|opa)$/)) return { intent: 'CHAT_LOCAL', reply: "Olá! 👋 Sou seu Coach. Vamos bater metas hoje?" };
-  
+  if (t.match(/^(oi|ol[áa]|bom dia|boa tarde|boa noite|eai|opa)$/)) return { intent: 'CHAT_LOCAL', reply: "Olá! 👋 Sou seu Coach. Tudo pronto por aqui!" };
   return { intent: 'USE_AI' };
 }
 
-// --- 5. CÉREBRO IA (Agora entende Metas) ---
+// --- 5. CÉREBRO IA ---
 async function processarComIA(mensagemTexto) {
   const dataHoje = new Date().toLocaleDateString('pt-BR');
-  
   const prompt = `
-    Hoje: ${dataHoje}.
-    Analise: "${mensagemTexto}".
-    
-    Identifique a intenção entre: 
-    - ADD_TRANSACTION (Gastar, Ganhar salário)
-    - CREATE_GOAL (Criar nova meta)
-    - ADD_TO_GOAL (Guardar dinheiro numa meta existente)
-    - DELETE_LAST
-    - CHAT
-
-    REGRAS DE EXTRAÇÃO:
-    1. Se ADD_TRANSACTION: type (expense/income), amount, description, category_guess, smart_comment.
-    2. Se CREATE_GOAL: 
-       - title (Nome da meta)
-       - target_amount (Valor alvo, se não tiver assuma 0)
-    3. Se ADD_TO_GOAL:
-       - goal_name_guess (Nome da meta para buscar)
-       - amount (Valor a guardar)
-    
-    Responda JSON puro:
-    {
-      "intent": "ADD_TRANSACTION" | "CREATE_GOAL" | "ADD_TO_GOAL" | "DELETE_LAST" | "CHAT",
-      "data": { 
-        "type": "expense" | "income", 
-        "amount": 0.00, 
-        "description": "string", 
-        "category_guess": "string",
-        "smart_comment": "string",
-        "title": "string",           // Para CREATE_GOAL
-        "target_amount": 0.00,       // Para CREATE_GOAL
-        "goal_name_guess": "string"  // Para ADD_TO_GOAL
-      },
-      "reply_text": "string"
-    }
+    Hoje: ${dataHoje}. Analise: "${mensagemTexto}".
+    Intents: ADD_TRANSACTION, CREATE_GOAL, ADD_TO_GOAL, DELETE_LAST, CHAT.
+    Output JSON ONLY.
+    Structure: { "intent": "STRING", "data": { ...fields }, "reply_text": "STRING" }
+    Fields for ADD_TRANSACTION: type(expense/income), amount, description, category_guess, smart_comment.
+    Fields for CREATE_GOAL: title, target_amount.
+    Fields for ADD_TO_GOAL: goal_name_guess, amount.
   `;
 
   try {
     const result = await model.generateContent(prompt);
     let text = result.response.text().replace(/```json|```/g, '').trim();
     const json = JSON.parse(text);
-    
-    // Sanitização de valor numérico geral
-    ['amount', 'target_amount'].forEach(field => {
-        if (json.data?.[field] && typeof json.data[field] === 'string') {
-            json.data[field] = parseFloat(json.data[field].replace('R$', '').replace(',', '.').trim());
-        }
+    ['amount', 'target_amount'].forEach(f => {
+        if (json.data?.[f] && typeof json.data[f] === 'string') json.data[f] = parseFloat(json.data[f].replace(/[^\d.,]/g, '').replace(',', '.'));
     });
-
     return json;
   } catch (error) {
     console.error("Erro IA:", error);
-    return { intent: "CHAT", reply_text: "Não entendi. Tente 'Nova meta Carro 20k' ou 'Gastei 50'." };
+    return { intent: "CHAT", reply_text: "Não entendi. Tente simplificar." };
   }
 }
 
@@ -124,16 +88,16 @@ bot.start(async (ctx) => {
   const { data: integration } = await supabase.from('user_integrations').select('*').eq('connection_token', token).single();
   if (!integration) return ctx.reply('❌ Token inválido.');
   await supabase.from('user_integrations').update({ telegram_chat_id: ctx.chat.id.toString(), telegram_username: ctx.from.username, connection_token: null }).eq('id', integration.id);
-  ctx.reply(`✅ **Conectado!** Agora sou seu Gerente de Metas e Gastos.`);
+  ctx.reply(`✅ **Conectado!** Bot atualizado e estável.`);
 });
 
 bot.command('ajuda', async (ctx) => ctx.reply(ajudaMenu.text, ajudaMenu.buttons));
-// Callbacks
-bot.action('help_metas', (ctx) => ctx.editMessageText(`🎯 **Gerenciar Metas**\n\n• Criar: "Nova meta Viagem 5000"\n• Guardar: "Guardar 200 na Viagem"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
-bot.action('help_gastos', (ctx) => ctx.editMessageText(`💸 **Lançar Gastos**\nEx: "Gastei 50 no Uber"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
-bot.action('help_ganhos', (ctx) => ctx.editMessageText(`💰 **Lançar Ganhos**\nEx: "Recebi 500"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
-bot.action('help_consultas', (ctx) => ctx.editMessageText(`📊 **Saúde Financeira**\nEx: "Saldo" ou "Resumo"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
-bot.action('help_erros', (ctx) => ctx.editMessageText(`❌ **Corrigir**\nEx: "Desfazer"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
+// Callbacks simplificados para economizar linhas
+bot.action('help_metas', (ctx) => ctx.editMessageText(`🎯 **Metas**: "Nova meta Carro 30k" ou "Guardar 100 no Carro"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
+bot.action('help_gastos', (ctx) => ctx.editMessageText(`💸 **Gastos**: "Gastei 50 no Uber"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
+bot.action('help_ganhos', (ctx) => ctx.editMessageText(`💰 **Ganhos**: "Recebi 500"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
+bot.action('help_consultas', (ctx) => ctx.editMessageText(`📊 **Consultas**: "Saldo", "Resumo"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
+bot.action('help_erros', (ctx) => ctx.editMessageText(`❌ **Corrigir**: "Desfazer"`, Markup.inlineKeyboard([[Markup.button.callback('🔙 Voltar', 'help_main')]])));
 bot.action('help_main', (ctx) => ctx.editMessageText(ajudaMenu.text, ajudaMenu.buttons));
 bot.action('help_close', (ctx) => ctx.deleteMessage());
 
@@ -145,13 +109,11 @@ bot.on('text', async (ctx) => {
   await ctx.sendChatAction('typing');
 
   let decisao = await rotearIntencao(ctx.message.text);
-  if (decisao.intent === 'USE_AI') {
-    decisao = await processarComIA(ctx.message.text);
-  }
+  if (decisao.intent === 'USE_AI') decisao = await processarComIA(ctx.message.text);
 
   switch (decisao.intent) {
-    case 'CREATE_GOAL': await handleCreateGoal(ctx, userId, decisao.data); break; // NOVO
-    case 'ADD_TO_GOAL': await handleAddToGoal(ctx, userId, decisao.data); break; // NOVO
+    case 'CREATE_GOAL': await handleCreateGoal(ctx, userId, decisao.data); break;
+    case 'ADD_TO_GOAL': await handleAddToGoal(ctx, userId, decisao.data); break;
     case 'ADD_TRANSACTION': await handleAddTransaction(ctx, userId, decisao.data); break;
     case 'DELETE_LAST': await handleDeleteLast(ctx, userId); break;
     case 'CHECK_BALANCE': await handleCheckBalance(ctx, userId); break;
@@ -161,183 +123,101 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// --- 8. HANDLERS (NOVOS E ANTIGOS) ---
-
-// 🆕 CRIAR META
+// --- HANDLERS ---
 async function handleCreateGoal(ctx, userId, data) {
-  if (!data.title) return ctx.reply("❓ Qual o nome da meta? Ex: 'Nova meta Carro'");
-  
-  const { error } = await supabase.from('goals').insert({
-    user_id: userId,
-    title: data.title,
-    target_amount: data.target_amount || 0,
-    current_amount: 0,
-    deadline: null // Opcional, por enquanto deixamos null
-  });
-
-  if (error) return ctx.reply("❌ Erro ao criar meta.");
-  
-  ctx.reply(`🎯 **Meta Criada!**\n\nObjetivo: **${data.title}**\nAlvo: R$ ${data.target_amount.toFixed(2)}\n\nBora economizar! 🚀`);
+  if (!data.title) return ctx.reply("❓ Nome da meta?");
+  const { error } = await supabase.from('goals').insert({ user_id: userId, title: data.title, target_amount: data.target_amount || 0, current_amount: 0 });
+  if (error) return ctx.reply("❌ Erro ao criar.");
+  ctx.reply(`🎯 **Meta Criada!**\nObjetivo: ${data.title}\nAlvo: R$ ${data.target_amount}`);
 }
 
-// 🆕 ADICIONAR DINHEIRO NA META
 async function handleAddToGoal(ctx, userId, data) {
-  if (!data.amount || !data.goal_name_guess) return ctx.reply("❓ Quanto e em qual meta? Ex: 'Guardar 100 no Carro'");
-
-  // 1. Busca a meta pelo nome (Busca aproximada)
-  const { data: goals } = await supabase
-    .from('goals')
-    .select('*')
-    .eq('user_id', userId)
-    .ilike('title', `%${data.goal_name_guess}%`)
-    .limit(1);
-
-  if (!goals || goals.length === 0) {
-    return ctx.reply(`⚠️ Não achei a meta "${data.goal_name_guess}". Tente criar primeiro: "Nova meta ${data.goal_name_guess} 5000".`);
-  }
-
+  if (!data.amount) return ctx.reply("❓ Quanto guardar?");
+  const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId).ilike('title', `%${data.goal_name_guess}%`).limit(1);
+  if (!goals?.length) return ctx.reply("⚠️ Meta não encontrada.");
   const meta = goals[0];
   const novoValor = Number(meta.current_amount) + Number(data.amount);
-
-  // 2. Atualiza a meta
-  const { error } = await supabase
-    .from('goals')
-    .update({ current_amount: novoValor })
-    .eq('id', meta.id);
-
-  if (error) return ctx.reply("❌ Erro ao atualizar meta.");
-
-  // 3. Feedback Motivacional
-  const progresso = meta.target_amount > 0 ? (novoValor / meta.target_amount) * 100 : 0;
-  const falta = Math.max(0, meta.target_amount - novoValor);
-  
-  ctx.reply(
-    `💰 **Depósito Confirmado!**\n\n` +
-    `Meta: **${meta.title}**\n` +
-    `+ R$ ${data.amount.toFixed(2)}\n` +
-    `───────────────\n` +
-    `📈 Total: R$ ${novoValor.toFixed(2)} (${progresso.toFixed(1)}%)\n` +
-    `🏁 Falta: R$ ${falta.toFixed(2)}`
-  );
+  await supabase.from('goals').update({ current_amount: novoValor }).eq('id', meta.id);
+  const pct = meta.target_amount > 0 ? (novoValor / meta.target_amount * 100).toFixed(1) : 0;
+  ctx.reply(`💰 **Depósito!**\n${meta.title}: +R$ ${data.amount}\nTotal: R$ ${novoValor} (${pct}%)`);
 }
 
-// (ANTIGO) Adicionar Transação
 async function handleAddTransaction(ctx, userId, data) {
-  if (!data?.amount) return ctx.reply("❓ Qual o valor?");
-
-  let categoryId = null;
-  let categoryName = 'Geral';
+  if (!data?.amount) return ctx.reply("❓ Valor?");
+  let catId = null, catName = 'Geral';
   const { data: cat } = await supabase.from('categories').select('id, name').ilike('name', `%${data.category_guess}%`).limit(1).maybeSingle();
-  if (cat) { categoryId = cat.id; categoryName = cat.name; }
-  else {
-    const { data: fallback } = await supabase.from('categories').select('id, name').limit(1).single();
-    categoryId = fallback?.id;
-  }
+  if (cat) { catId = cat.id; catName = cat.name; } 
+  else { const { data: fb } = await supabase.from('categories').select('id, name').limit(1).single(); catId = fb?.id; }
 
-  const { error } = await supabase.from('transactions').insert({
-    user_id: userId, description: data.description || "Via Bot", amount: data.amount, type: data.type, category_id: categoryId, date: new Date().toISOString()
-  });
+  const { error } = await supabase.from('transactions').insert({ user_id: userId, description: data.description || "Bot", amount: data.amount, type: data.type, category_id: catId, date: new Date().toISOString() });
+  if (error) return ctx.reply("❌ Erro.");
 
-  if (error) return ctx.reply("❌ Erro ao salvar.");
-
-  let extraMessage = "";
+  let extra = "";
   if (data.type === 'expense') {
-    const { data: budget } = await supabase.from('budgets').select('limit_amount').eq('user_id', userId).eq('category_id', categoryId).maybeSingle();
+    const { data: budget } = await supabase.from('budgets').select('limit_amount').eq('user_id', userId).eq('category_id', catId).maybeSingle();
     if (budget) {
-      const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-      const { data: trs } = await supabase.from('transactions').select('amount').eq('user_id', userId).eq('category_id', categoryId).eq('type', 'expense').gte('date', inicioMes);
-      const total = trs.reduce((a, b) => a + Number(b.amount), 0);
-      const pct = (total / budget.limit_amount) * 100;
-      if (pct > 100) extraMessage = `\n\n🚨 **ESTOUROU:** Você passou o limite de ${categoryName}! (${pct.toFixed(0)}%)`;
-      else if (pct >= 90) extraMessage = `\n\n⚠️ **Cuidado:** 90% do limite de ${categoryName} usado.`;
+       const inicio = new Date(new Date().setDate(1)).toISOString();
+       const { data: trs } = await supabase.from('transactions').select('amount').eq('user_id', userId).eq('category_id', catId).eq('type', 'expense').gte('date', inicio);
+       const tot = trs.reduce((a,b)=>a+Number(b.amount),0);
+       if (tot > budget.limit_amount) extra = `\n🚨 **Estourou!** (${((tot/budget.limit_amount)*100).toFixed(0)}%)`;
     }
+  } else if (data.type === 'income') {
+    const { data: g } = await supabase.from('goals').select('*').eq('user_id', userId).lt('current_amount', supabase.raw('target_amount')).limit(1);
+    if (g?.length) extra = `\n🎯 **Coach:** Guarde ${(data.amount*0.1).toFixed(0)} na meta "${g[0].title}"!`;
   }
-
-  if (data.type === 'income') {
-    // Sugestão de Meta
-    const { data: goals } = await supabase.from('goals').select('*').eq('user_id', userId).lt('current_amount', supabase.raw('target_amount')).limit(1);
-    if (goals && goals.length > 0) {
-      const meta = goals[0];
-      const sugestao = (data.amount * 0.10).toFixed(2);
-      extraMessage = `\n\n🎯 **Coach:** Que tal guardar R$ ${sugestao} na meta "${meta.title}"? Digite "Guardar ${sugestao} na ${meta.title}"`;
-    }
-  }
-
-  const comentario = data.smart_comment || "Registrado!";
-  const emoji = data.type === 'expense' ? '💸' : '💰';
-  ctx.reply(`${comentario}\n\n✅ **${data.description}**\n💲 R$ ${data.amount.toFixed(2)}\n${emoji} Categoria: ${categoryName}${extraMessage}`);
+  ctx.reply(`${data.smart_comment || "Ok!"}\n✅ **${data.description}**\n💲 R$ ${data.amount}\n📂 ${catName}${extra}`);
 }
 
 async function handleDeleteLast(ctx, userId) {
   const { data: last } = await supabase.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1).single();
-  if (!last) return ctx.reply("🚫 Nada para apagar.");
+  if (!last) return ctx.reply("🚫 Nada.");
   await supabase.from('transactions').delete().eq('id', last.id);
-  ctx.reply(`🗑️ **Apagado:** ${last.description} (R$ ${last.amount})`);
+  ctx.reply(`🗑️ Apagado: ${last.description} (R$ ${last.amount})`);
 }
 
 async function handleCheckBalance(ctx, userId) {
-  await gerarRelatorioSaude(userId, ctx.chat.id.toString());
+    const hoje = new Date();
+    const inicio = new Date(hoje.setDate(1)).toISOString();
+    const { data: trs } = await supabase.from('transactions').select('*').eq('user_id', userId).gte('date', inicio);
+    let rec = 0, desp = 0; trs.forEach(t => t.type === 'income' ? rec += t.amount : desp += t.amount);
+    ctx.reply(`📊 **Resumo:**\n🟢 Entradas: R$ ${rec}\n🔴 Saídas: R$ ${desp}\n💵 **Saldo: R$ ${rec-desp}**`);
 }
 
 async function handleCheckBills(ctx, userId) {
-  const dia = new Date().getDate();
-  const { data: bills } = await supabase.from('recurring_bills').select('*').eq('user_id', userId).gte('due_day', dia).limit(5);
-  if (!bills?.length) return ctx.reply("✅ Sem contas próximas.");
-  let msg = `📅 **Próximas Contas:**\n`;
-  bills.forEach(b => msg += `• ${b.description}: R$ ${b.amount} (Dia ${b.due_day})\n`);
-  ctx.reply(msg);
+    const { data: bills } = await supabase.from('recurring_bills').select('*').eq('user_id', userId).gte('due_day', new Date().getDate()).limit(5);
+    if (!bills?.length) return ctx.reply("✅ Sem contas.");
+    ctx.reply(`📅 **Contas:**\n` + bills.map(b => `• ${b.description}: R$ ${b.amount} (Dia ${b.due_day})`).join('\n'));
 }
 
-async function gerarRelatorioSaude(userId, chatId) {
-  const hoje = new Date();
-  const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString();
-  const { data: transactions } = await supabase.from('transactions').select('*').eq('user_id', userId).gte('date', inicioMes);
-  const { data: profile } = await supabase.from('profiles').select('monthly_income').eq('id', userId).single();
-  const { data: goals } = await supabase.from('goals').select('title, current_amount, target_amount').eq('user_id', userId);
-  const { data: bills } = await supabase.from('recurring_bills').select('*').eq('user_id', userId).eq('due_day', hoje.getDate());
-
-  let receita = 0, despesa = 0;
-  transactions.forEach(t => t.type === 'income' ? receita += t.amount : despesa += t.amount);
-  const saldo = receita - despesa;
-  
-  const promptAnalise = `
-    Coach Financeiro IA. Data: ${hoje.toLocaleDateString()}.
-    DADOS: Renda: ${profile?.monthly_income}, Receita: ${receita}, Despesa: ${despesa}, Saldo: ${saldo}, Contas Hoje: ${bills?.length}, Metas: ${JSON.stringify(goals)}.
-    
-    Escreva um "Bom dia" curto e motivador.
-    1. Resuma os números.
-    2. Comente sobre o progresso das metas.
-    3. Avise contas.
-  `;
-
-  try {
-    const result = await model.generateContent(promptAnalise);
-    bot.telegram.sendMessage(chatId, result.response.text());
-  } catch (error) {
-    bot.telegram.sendMessage(chatId, `📊 **Resumo:**\nSaldo: R$ ${saldo.toFixed(2)}\nMetas Ativas: ${goals?.length || 0}`);
-  }
-}
-
-// CRON (08:00)
+// CRON
 cron.schedule('0 8 * * *', async () => {
   const { data: ints } = await supabase.from('user_integrations').select('*').not('telegram_chat_id', 'is', null);
   if (!ints) return;
-  for (const user of ints) await gerarRelatorioSaude(user.user_id, user.telegram_chat_id);
+  for (const user of ints) {
+    // Lógica simplificada para o cron não travar
+    const { data: bills } = await supabase.from('recurring_bills').select('*').eq('user_id', user.user_id).eq('due_day', new Date().getDate());
+    if (bills?.length) bot.telegram.sendMessage(user.telegram_chat_id, `🔔 **Bom dia!**\nVocê tem ${bills.length} contas vencendo hoje.`);
+  }
 }, { timezone: "America/Sao_Paulo" });
 
-// START
+// --- 🔥 TRUQUE DO RENDER (HEALTH CHECK SERVER) 🔥 ---
+// O Render exige uma porta aberta. Se não tiver, ele acha que o deploy falhou.
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running OK');
+}).listen(PORT, () => {
+  console.log(`🌍 Health Check Server rodando na porta ${PORT}`);
+});
+
+// Lançamento do Bot
 bot.launch({ dropPendingUpdates: true, polling: { retryAfter: 2000, timeout: 30 } })
-  .then(async () => {
-    try {
-      await bot.telegram.setMyCommands([
-        { command: 'start', description: 'Reiniciar' },
-        { command: 'ajuda', description: 'Menu Principal' },
-        { command: 'saldo', description: 'Relatório Completo' }
-      ]);
-    } catch(e) {}
-    console.log('✅ Bot Metas + Coach Online!');
-  })
-  .catch((err) => { if (err.description?.includes('Conflict')) process.exit(1); });
+  .then(() => console.log('✅ Bot Iniciado!'))
+  .catch((err) => { 
+    console.error('❌ Erro Boot:', err); 
+    if(err.description?.includes('Conflict')) process.exit(1); 
+  });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
