@@ -86,16 +86,52 @@ bot.action('view_extract', reportController.handleExtract);
 initScheduler(bot);
 
 // --- INICIALIZAÇÃO ---
-bot.launch({ dropPendingUpdates: true })
-  .then(() => console.log('🚀 Finan.AI Bot Profissional Online!'))
-  .catch((err) => console.error('Erro ao iniciar bot:', err));
+async function startBot() {
+    try {
+        // 1. Limpa webhooks antigos que possam estar travando o bot
+        await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+        console.log('🧹 Webhook antigo limpo.');
 
-// Graceful Stop (Encerra tanto o bot quanto o servidor http se necessário)
-process.once('SIGINT', () => {
-    bot.stop('SIGINT');
-    server.close();
-});
-process.once('SIGTERM', () => {
-    bot.stop('SIGTERM');
-    server.close();
-});
+        // 2. Inicia o Bot
+        await bot.launch({
+            dropPendingUpdates: true,
+            allowedUpdates: ['message', 'callback_query'], // Otimiza a conexão
+        });
+        console.log('🚀 Finan.AI Bot Iniciado com Sucesso!');
+
+    } catch (error) {
+        // 3. Tratamento Específico para o Erro 409 (Conflito)
+        if (error.response && error.response.error_code === 409) {
+            console.warn('⚠️ Conflito de Instância (Erro 409) detectado!');
+            console.warn('⏳ O Render ainda está fechando o bot antigo... Esperando 5 segundos para tentar de novo.');
+            
+            // Espera 5 segundos e tenta reconectar
+            setTimeout(() => {
+                console.log('🔄 Tentando reiniciar agora...');
+                startBot(); // Tenta de novo (Recursividade)
+            }, 5000);
+        } else {
+            console.error('❌ Erro fatal ao iniciar o bot:', error);
+        }
+    }
+}
+
+// Inicia a função
+startBot();
+
+// ==============================================================================
+// 7. ENCERRAMENTO GRACIOSO (Graceful Shutdown)
+// ==============================================================================
+// Isso garante que o bot avise ao Telegram que está saindo antes de morrer
+
+const stopBot = (signal) => {
+    console.log(`🛑 Recebido sinal ${signal}. Encerrando bot...`);
+    bot.stop(signal);
+    server.close(() => {
+        console.log('✅ Servidor HTTP fechado.');
+        process.exit(0);
+    });
+};
+
+process.once('SIGINT', () => stopBot('SIGINT'));
+process.once('SIGTERM', () => stopBot('SIGTERM'));
