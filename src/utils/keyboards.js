@@ -1,13 +1,17 @@
 const { Markup } = require('telegraf');
 
+const DASHBOARD_URL = 'https://finan-ai-nine.vercel.app/';
+
+// Menu Principal (Teclado Inferior)
 const MainMenu = Markup.keyboard([
-    ['📉 Registrar Gasto', '📈 Registrar Ganho'],
-    ['📊 Ver Saldo', '📝 Extrato'],
-    ['❓ Ajuda']
+    ['📉 Lançar Gasto', '📈 Lançar Ganho'],
+    ['💰 Saldo', '📄 Extrato'],
+    ['🎯 Metas', '❓ Ajuda']
 ]).resize();
 
-const InlineUndo = (transactionId) => Markup.inlineKeyboard([
-    Markup.button.callback('↩️ Desfazer', `undo_${transactionId}`)
+// Botão Inline (Aparece nas mensagens de resposta)
+const LinkToWeb = Markup.inlineKeyboard([
+    Markup.button.url('🌐 Ver Detalhes no Dashboard', DASHBOARD_URL)
 ]);
 
-module.exports = { MainMenu, InlineUndo };
+module.exports = { MainMenu, LinkToWeb, DASHBOARD_URL };

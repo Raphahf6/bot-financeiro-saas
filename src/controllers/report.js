@@ -1,67 +1,56 @@
 const supabase = require('../config/supabase');
-const { formatCurrency, formatDate } = require('../utils/helpers');
-const { mainKeyboard } = require('../utils/keyboards');
-const { MESSAGES } = require('../config/constants');
+const { getAuthenticatedUser, formatCurrency, formatDate } = require('../utils/helpers');
+const { MainMenu, LinkToWeb, DASHBOARD_URL } = require('../utils/keyboards');
 
-// Ver Saldo
+// SALDO
 const getBalance = async (ctx) => {
-    try {
-        const { data, error } = await supabase
-            .from('transactions')
-            .select('amount')
-            .eq('user_id', ctx.from.id.toString());
+    const userId = await getAuthenticatedUser(ctx.chat.id);
+    if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
 
-        if (error) throw error;
+    const { data, error } = await supabase
+        .from('transactions')
+        .select('amount')
+        .eq('user_id', userId);
 
-        // Soma tudo
-        const total = data.reduce((acc, curr) => acc + curr.amount, 0);
-        
-        ctx.reply(`💰 *Saldo Atual:* ${formatCurrency(total)}`, { parse_mode: 'Markdown', ...mainKeyboard });
+    if (error) return ctx.reply('Erro ao calcular saldo.');
 
-    } catch (err) {
-        console.error('Erro ao buscar saldo:', err);
-        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
-    }
-};
-
-// Ver Extrato
-const getStatement = async (ctx) => {
-    try {
-        const { data, error } = await supabase
-            .from('transactions')
-            .select('*')
-            .eq('user_id', ctx.from.id.toString())
-            .order('created_at', { ascending: false })
-            .limit(5);
-
-        if (error) throw error;
-
-        if (!data || data.length === 0) {
-            return ctx.reply(MESSAGES.NO_DATA, mainKeyboard);
-        }
-
-        let msg = '📄 *Últimas 5 Movimentações:*\n\n';
-        data.forEach(t => {
-            const icon = t.type === 'expense' ? '🔻' : '🟢';
-            msg += `${icon} *${formatCurrency(t.amount)}* - ${t.description}\n📅 ${formatDate(t.created_at)}\n\n`;
-        });
-
-        ctx.reply(msg, { parse_mode: 'Markdown', ...mainKeyboard });
-
-    } catch (err) {
-        console.error('Erro ao buscar extrato:', err);
-        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
-    }
-};
-
-// Ver Metas (Exemplo Fixo por enquanto, pois não temos tabela de metas definida)
-const getGoals = async (ctx) => {
+    const total = data.reduce((acc, cur) => acc + cur.amount, 0);
+    
     ctx.reply(
-        '🎯 *Suas Metas (Beta)*\n\n' +
-        '1. Reserva de Emergência: [====..] 60%\n' +
-        '2. Viagem Férias: [==....] 30%\n\n' +
-        '_Funcionalidade de cadastro de metas em desenvolvimento._',
-        { parse_mode: 'Markdown', ...mainKeyboard }
+        `💵 *Saldo Atual*\n\n${formatCurrency(total)}\n\n_Visualize gráficos detalhados no site._`, 
+        { parse_mode: 'Markdown', ...LinkToWeb }
+    );
+};
+
+// EXTRATO
+const getStatement = async (ctx) => {
+    const userId = await getAuthenticatedUser(ctx.chat.id);
+    if (!userId) return ctx.reply('🔒 Conecte sua conta com /start.');
+
+    const { data } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: false }) // Verifique se sua coluna é 'date' ou 'created_at'
+        .limit(5);
+
+    if (!data || data.length === 0) return ctx.reply('📭 Nenhuma movimentação recente.', MainMenu);
+
+    let msg = '📄 *Últimas Movimentações:*\n\n';
+    data.forEach(t => {
+        const icon = t.amount < 0 ? '🔻' : '🟢';
+        msg += `${icon} *${formatCurrency(Math.abs(t.amount))}* - ${t.description}\n📅 ${formatDate(t.date || t.created_at)}\n\n`;
+    });
+
+    ctx.reply(msg, { parse_mode: 'Markdown', ...LinkToWeb });
+};
+
+// METAS (Simulação com Link)
+const getGoals = async (ctx) => {
+    // Como metas geralmente são complexas, melhor mandar ver no site
+    ctx.reply(
+        `🎯 *Suas Metas*\n\nPara gerenciar e visualizar o progresso detalhado das suas metas, acesse o painel completo:\n\n🔗 ${DASHBOARD_URL}`,
+        { parse_mode: 'Markdown', ...MainMenu }
     );
 };
 

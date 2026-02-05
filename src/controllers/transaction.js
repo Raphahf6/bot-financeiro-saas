@@ -1,67 +1,59 @@
 const supabase = require('../config/supabase');
-const { MESSAGES } = require('../config/constants');
-const { formatCurrency } = require('../utils/helpers');
-const { parseTransactionInput } = require('./inputs');
-const { mainKeyboard } = require('../utils/keyboards');
+const { getAuthenticatedUser, formatCurrency } = require('../utils/helpers');
+const { MainMenu, LinkToWeb } = require('../utils/keyboards');
 
-// Adicionar Despesa
-const addExpense = async (ctx) => {
-    const input = parseTransactionInput(ctx.message.text);
-
-    if (!input.isValid) {
-        return ctx.reply(MESSAGES.ERROR_INVALID_INPUT, { parse_mode: 'Markdown' });
-    }
-
-    try {
-        const { error } = await supabase
-            .from('transactions') // VERIFIQUE O NOME DA SUA TABELA
-            .insert({
-                user_id: ctx.from.id.toString(),
-                amount: -input.amount, // Negativo para gasto
-                description: input.description,
-                type: 'expense',
-                created_at: new Date()
-            });
-
-        if (error) throw error;
-
-        const valorFormatado = formatCurrency(input.amount);
-        ctx.reply(MESSAGES.SAVED_EXPENSE(valorFormatado, input.description), { parse_mode: 'Markdown', ...mainKeyboard });
-
-    } catch (err) {
-        console.error('Erro ao salvar despesa:', err);
-        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
-    }
+// Função auxiliar para interpretar texto: "50 padaria"
+const parseInput = (text) => {
+    const cleanText = text.replace(/^\/(gasto|ganho)\s*/i, '').replace('R$', '').trim();
+    const parts = cleanText.split(' ');
+    const valorStr = parts[0].replace(',', '.');
+    const valor = parseFloat(valorStr);
+    const descricao = parts.slice(1).join(' ') || 'Sem descrição';
+    return { valor, descricao, valido: !isNaN(valor) };
 };
 
-// Adicionar Ganho
-const addIncome = async (ctx) => {
-    const input = parseTransactionInput(ctx.message.text);
+const addTransaction = async (ctx, type) => {
+    // 1. Autenticação
+    const userId = await getAuthenticatedUser(ctx.chat.id);
+    if (!userId) return ctx.reply('🔒 Você precisa conectar sua conta primeiro. Digite /start para instruções.');
 
-    if (!input.isValid) {
-        return ctx.reply(MESSAGES.ERROR_INVALID_INPUT, { parse_mode: 'Markdown' });
+    // 2. Parse do Input
+    const { valor, descricao, valido } = parseInput(ctx.message.text);
+    
+    // Instrução de uso se falhar
+    if (!valido) {
+        const cmd = type === 'expense' ? '/gasto' : '/ganho';
+        return ctx.reply(`❌ Formato inválido.\nUse: \`${cmd} VALOR DESCRIÇÃO\`\nEx: \`${cmd} 50.00 Mercado\``, { parse_mode: 'Markdown' });
     }
 
+    // 3. Salvar no Supabase (Usando o UUID do site!)
     try {
         const { error } = await supabase
             .from('transactions')
             .insert({
-                user_id: ctx.from.id.toString(),
-                amount: input.amount, // Positivo para ganho
-                description: input.description,
-                type: 'income',
-                created_at: new Date()
+                user_id: userId, // <--- O SEGREDO ESTÁ AQUI (UUID)
+                amount: type === 'expense' ? -Math.abs(valor) : Math.abs(valor),
+                description: descricao,
+                type: type,
+                category_id: null, // Pode implementar categorização depois
+                date: new Date() // Ajuste o nome da coluna de data conforme sua tabela (created_at ou date)
             });
 
         if (error) throw error;
 
-        const valorFormatado = formatCurrency(input.amount);
-        ctx.reply(MESSAGES.SAVED_INCOME(valorFormatado, input.description), { parse_mode: 'Markdown', ...mainKeyboard });
+        const emoji = type === 'expense' ? '💸' : '💰';
+        ctx.reply(
+            `${emoji} *${type === 'expense' ? 'Despesa' : 'Receita'} Registrada!*\n\nValor: ${formatCurrency(valor)}\nDesc: ${descricao}`, 
+            { parse_mode: 'Markdown', ...LinkToWeb } // Mostra botão para ver no site
+        );
 
     } catch (err) {
-        console.error('Erro ao salvar ganho:', err);
-        ctx.reply(MESSAGES.ERROR_GENERIC, mainKeyboard);
+        console.error('Erro transaction:', err);
+        ctx.reply('⚠️ Erro ao salvar. Tente novamente.', MainMenu);
     }
 };
 
-module.exports = { addExpense, addIncome };
+module.exports = {
+    addExpense: (ctx) => addTransaction(ctx, 'expense'),
+    addIncome: (ctx) => addTransaction(ctx, 'income')
+};
