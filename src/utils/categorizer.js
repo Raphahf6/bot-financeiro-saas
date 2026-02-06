@@ -103,6 +103,7 @@ async function getCategoryOptions(userId) {
         .from('categories')
         .select('id, name')
         .or(`user_id.eq.${userId},user_id.is.null`)
+        .order('name', { ascending: true }) // ADICIONE ESSA LINHA
         .in('name', DEFAULT_CATEGORIES); // Filtra só as principais para não poluir
     return data || [];
 }

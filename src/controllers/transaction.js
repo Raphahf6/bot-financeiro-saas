@@ -73,29 +73,28 @@ const addTransaction = async (ctx, type) => {
 // 2. CALLBACK: QUANDO O USUÁRIO CLICA NO BOTÃO DA CATEGORIA
 const handleCategoryCallback = async (ctx) => {
     try {
-        // data vem como: "set_cat:TRANSACTION_ID:INDEX"
+        // data vem como: "set_cat:ID_TRANSACAO:INDEX"
         const parts = ctx.match[1].split(':'); 
         const transactionId = parts[0];
         const categoryIndex = parseInt(parts[1]);
 
         if (!transactionId || isNaN(categoryIndex)) return;
 
-        // 1. Busca as categorias na MESMA ORDEM que foram geradas (alfabética)
         const userId = await getAuthenticatedUser(ctx.chat.id);
+        
+        // BUSCA EXATAMENTE IGUAL À CRIAÇÃO DOS BOTÕES
         const { data: categories } = await supabase
             .from('categories')
             .select('id, name')
             .or(`user_id.eq.${userId},user_id.is.null`)
-            .order('name', { ascending: true }); // Importante: Ordenar por nome
+            .order('name', { ascending: true }); // ORDENAÇÃO OBRIGATÓRIA AQUI
 
-        // 2. Encontra a categoria pelo índice
         const selectedCategory = categories[categoryIndex];
 
         if (!selectedCategory) {
-            return ctx.answerCbQuery('❌ Categoria não encontrada (índice inválido).');
+            return ctx.answerCbQuery('❌ Erro: Índice não sincronizado.');
         }
 
-        // 3. Atualiza a transação com o ID real
         const { error } = await supabase
             .from('transactions')
             .update({ category_id: selectedCategory.id })
@@ -103,14 +102,10 @@ const handleCategoryCallback = async (ctx) => {
 
         if (error) throw error;
 
-        // 4. Feedback
         await ctx.editMessageText(
             `✅ Categoria atualizada para: *${selectedCategory.name}*`, 
             { parse_mode: 'Markdown' }
         );
-        
-        // Opcional: Mostra o menu de novo
-        // await ctx.reply('O que deseja fazer agora?', MainMenu);
 
     } catch (err) {
         console.error('Erro ao definir categoria:', err);
