@@ -39,18 +39,25 @@ const createGoalActions = (goalId) => {
     ]);
 };
 
-// Botões para Transações Comuns
+// [CORRIGIDO] Usa INDEX em vez de ID para caber nos 64 bytes
 const createCategoryButtons = (transactionId, categories) => {
-    const buttons = categories.map(cat => 
-        Markup.button.callback(cat.name, `set_cat:${transactionId}:${cat.id}`)
+    // Garante ordenação alfabética para bater com o índice na volta
+    const sortedCats = [...categories].sort((a, b) => a.name.localeCompare(b.name));
+    
+    const buttons = sortedCats.map((cat, index) => 
+        // Payload: set_cat:UUID_TRANSAÇÃO:0
+        Markup.button.callback(cat.name, `set_cat:${transactionId}:${index}`)
     );
     return Markup.inlineKeyboard(buttons, { columns: 2 });
 };
 
-// [NOVO] Botões para Contas Fixas (Recurring)
+// [CORRIGIDO] Usa INDEX para contas fixas também
 const createRecurringCategoryButtons = (billId, categories) => {
-    const buttons = categories.map(cat => 
-        Markup.button.callback(cat.name, `set_rec_cat:${billId}:${cat.id}`)
+    const sortedCats = [...categories].sort((a, b) => a.name.localeCompare(b.name));
+    
+    const buttons = sortedCats.map((cat, index) => 
+        // Payload: set_rec_cat:UUID_CONTA:0
+        Markup.button.callback(cat.name, `set_rec_cat:${billId}:${index}`)
     );
     return Markup.inlineKeyboard(buttons, { columns: 2 });
 };
@@ -63,5 +70,5 @@ module.exports = {
     LinkToWeb, 
     createGoalActions,
     createCategoryButtons,
-    createRecurringCategoryButtons // <--- Exportado novo
+    createRecurringCategoryButtons 
 };

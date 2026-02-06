@@ -100,25 +100,34 @@ const addRecurring = async (ctx) => {
 
 // 3. CALLBACK DE CATEGORIA (Quando clica no botão)
 const handleRecurringCategoryCallback = async (ctx) => {
-    // "set_rec_cat:BILL_ID:CAT_ID"
-    const parts = ctx.match[0].split(':');
-    const billId = parts[1];
-    const catId = parts[2];
-
     try {
-        // Atualiza no banco
+        // data: "set_rec_cat:BILL_ID:INDEX"
+        const parts = ctx.match[1].split(':');
+        const billId = parts[0];
+        const categoryIndex = parseInt(parts[1]);
+
+        if (!billId || isNaN(categoryIndex)) return;
+
+        const userId = await getAuthenticatedUser(ctx.chat.id);
+        const { data: categories } = await supabase
+            .from('categories')
+            .select('id, name')
+            .or(`user_id.eq.${userId},user_id.is.null`)
+            .order('name', { ascending: true }); // Mesma ordem da geração
+
+        const selectedCategory = categories[categoryIndex];
+
+        if (!selectedCategory) return ctx.answerCbQuery('Erro: Índice inválido.');
+
         const { error } = await supabase
             .from('recurring_bills')
-            .update({ category_id: catId })
+            .update({ category_id: selectedCategory.id })
             .eq('id', billId);
 
         if (error) throw error;
 
-        // Pega nome da categoria para confirmar
-        const { data: cat } = await supabase.from('categories').select('name').eq('id', catId).single();
-        
         await ctx.editMessageText(
-            `✅ Categoria definida como: *${cat.name}*\nAgora seu orçamento está ajustado!`, 
+            `✅ Categoria definida como: *${selectedCategory.name}*`, 
             { parse_mode: 'Markdown' }
         );
         
@@ -127,5 +136,4 @@ const handleRecurringCategoryCallback = async (ctx) => {
         ctx.answerCbQuery('Erro ao atualizar.');
     }
 };
-
 module.exports = { listRecurring, addRecurring, handleRecurringCategoryCallback };

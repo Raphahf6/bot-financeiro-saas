@@ -72,30 +72,48 @@ const addTransaction = async (ctx, type) => {
 
 // 2. CALLBACK: QUANDO O USUÁRIO CLICA NO BOTÃO DA CATEGORIA
 const handleCategoryCallback = async (ctx) => {
-    // O dado vem como: "set_cat:ID_DA_TRANSACAO:ID_DA_CATEGORIA"
-    const data = ctx.match[0]; 
-    const parts = data.split(':');
-    const transactionId = parts[1];
-    const categoryId = parts[2];
-
     try {
-        // Atualiza a transação com a categoria escolhida
+        // data vem como: "set_cat:TRANSACTION_ID:INDEX"
+        const parts = ctx.match[1].split(':'); 
+        const transactionId = parts[0];
+        const categoryIndex = parseInt(parts[1]);
+
+        if (!transactionId || isNaN(categoryIndex)) return;
+
+        // 1. Busca as categorias na MESMA ORDEM que foram geradas (alfabética)
+        const userId = await getAuthenticatedUser(ctx.chat.id);
+        const { data: categories } = await supabase
+            .from('categories')
+            .select('id, name')
+            .or(`user_id.eq.${userId},user_id.is.null`)
+            .order('name', { ascending: true }); // Importante: Ordenar por nome
+
+        // 2. Encontra a categoria pelo índice
+        const selectedCategory = categories[categoryIndex];
+
+        if (!selectedCategory) {
+            return ctx.answerCbQuery('❌ Categoria não encontrada (índice inválido).');
+        }
+
+        // 3. Atualiza a transação com o ID real
         const { error } = await supabase
             .from('transactions')
-            .update({ category_id: categoryId })
+            .update({ category_id: selectedCategory.id })
             .eq('id', transactionId);
 
         if (error) throw error;
 
-        // Busca o nome da categoria só para confirmar visualmente
-        const { data: cat } = await supabase.from('categories').select('name').eq('id', categoryId).single();
-        const catName = cat ? cat.name : 'Selecionada';
-
-        // Edita a mensagem original removendo os botões e confirmando
-        await ctx.editMessageText(`✅ Categoria definida como: *${catName}*`, { parse_mode: 'Markdown' });
+        // 4. Feedback
+        await ctx.editMessageText(
+            `✅ Categoria atualizada para: *${selectedCategory.name}*`, 
+            { parse_mode: 'Markdown' }
+        );
         
+        // Opcional: Mostra o menu de novo
+        // await ctx.reply('O que deseja fazer agora?', MainMenu);
+
     } catch (err) {
-        console.error('Erro callback:', err);
+        console.error('Erro ao definir categoria:', err);
         ctx.answerCbQuery('Erro ao atualizar categoria.');
     }
 };
